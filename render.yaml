@@ -12,7 +12,6 @@ services:
     healthCheckPath: /accounts/login/
     dockerContext: .
     dockerfilePath: ./Dockerfile
-    preDeployCommand: "python manage.py migrate --noinput && python manage.py collectstatic --noinput --clear"
     envVars:
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.prod

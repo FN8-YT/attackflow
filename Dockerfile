@@ -66,14 +66,12 @@ COPY --from=builder /opt/venv /opt/venv
 WORKDIR /app
 COPY --chown=app:app . /app
 
+# Entrypoint: corre migraciones + collectstatic antes de Gunicorn.
+# Necesario en Render free (preDeployCommand no está disponible).
+RUN chmod +x /app/docker/entrypoint.sh
+
 USER app
 
 EXPOSE 8000
 
-# En producción usamos gunicorn. docker-compose lo sobrescribe en dev.
-CMD ["gunicorn", "config.wsgi:application", \
-     "--bind", "0.0.0.0:8000", \
-     "--workers", "3", \
-     "--timeout", "60", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+CMD ["/app/docker/entrypoint.sh"]
