@@ -59,6 +59,12 @@ services:
         value: "AttackFlow <noreply@attackflow-web.onrender.com>"
       - key: DISABLE_PLAN_LIMITS
         value: "False"
+      # Free tier sin worker: forzar EAGER para que la view lance el
+      # scan en un thread daemon (ver apps/audits/views._dispatch_audit).
+      # Sin esto, la task se encola en Upstash y nadie la consume, el
+      # audit queda PENDING eterno.
+      - key: CELERY_TASK_ALWAYS_EAGER
+        value: "True"
 
   # ---------------------------------------------------------------------------
   # Worker (Celery) — requiere plan de pago en Render (mínimo Starter $7/mes).
