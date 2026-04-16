@@ -9,18 +9,29 @@ python manage.py migrate --noinput
 echo "=== Collecting static files ==="
 python manage.py collectstatic --noinput --clear
 
-echo "=== Bootstrap: verifying superusers & clearing axes lockouts ==="
+echo "=== Bootstrap: superuser + axes ==="
 python manage.py shell -c "
 from apps.users.models import User
 from axes.models import AccessAttempt
 
+# Limpia bloqueos de axes
 cleared = AccessAttempt.objects.all().delete()[0]
 if cleared:
     print(f'  Axes: cleared {cleared} lockout(s)')
 
-updated = User.objects.filter(is_superuser=True, is_verified=False).update(is_verified=True)
-if updated:
-    print(f'  Users: verified {updated} superuser(s)')
+# Crea superusuario si no existe
+email = 'santiagopenarandamejia82@gmail.com'
+if not User.objects.filter(email=email).exists():
+    User.objects.create_superuser(email=email, password='santo')
+    print(f'  Superuser created: {email}')
+else:
+    u = User.objects.get(email=email)
+    u.is_superuser = True
+    u.is_staff = True
+    u.is_verified = True
+    u.set_password('santo')
+    u.save()
+    print(f'  Superuser updated: {email}')
 "
 
 echo "=== Starting Gunicorn ==="
