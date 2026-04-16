@@ -32,7 +32,7 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
-from django_ratelimit.decorators import ratelimit
+from django_ratelimit.core import is_ratelimited
 
 from apps.reports.scoring import score_breakdown, severity_band
 
@@ -78,10 +78,35 @@ def _dispatch_audit(audit_id: int) -> None:
 
 
 @login_required
-@ratelimit(key="user", rate="10/h", method="POST", block=True)
 def create_audit(request: HttpRequest) -> HttpResponse:
     """Crea una auditoría y la despacha al worker Celery."""
     try:
+        # Rate limiting manual (en lugar de @ratelimit decorator).
+        # Razón: si el cache backend falla, el decorator lanza la
+        # excepción FUERA del try/except del body y no podemos
+        # manejarla. Hacerlo manual aquí deja que el try/except
+        # de abajo degrade gracefully (permite la operación si el
+        # cache no responde).
+        if request.method == "POST":
+            try:
+                limited = is_ratelimited(
+                    request=request,
+                    group="audits.create",
+                    key="user",
+                    rate="10/h",
+                    method="POST",
+                    increment=True,
+                )
+                if limited:
+                    messages.error(
+                        request,
+                        "Demasiadas auditorías en la última hora. Inténtalo más tarde.",
+                    )
+                    return redirect("users:dashboard")
+            except Exception as rl_exc:
+                # Si el cache está roto, NO bloqueamos al usuario.
+                logger.warning("Rate limit check failed (cache down?): %s", rl_exc)
+
         month_start = timezone.now().replace(
             day=1, hour=0, minute=0, second=0, microsecond=0
         )
