@@ -10,13 +10,24 @@ Tres preocupaciones transversales:
 1. Rate limiting por usuario con django-ratelimit.
 2. Cuota mensual (depende del plan).
 3. Ownership: un usuario nunca puede ver auditorías de otro.
+
+Modo degradado (Render free tier, sin worker):
+- Si `CELERY_TASK_ALWAYS_EAGER=True`, la task normalmente se ejecutaría
+  síncrona en el mismo proceso que hace el POST. Eso bloquea el request
+  HTTP minutos y gunicorn lo mata por timeout (500).
+- En su lugar lanzamos la task en un thread daemon y devolvemos el
+  redirect a /status/ inmediatamente. El polling del status page
+  detecta la finalización igual que lo haría con un worker real.
 """
 from __future__ import annotations
 
 import logging
+import threading
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.db import close_old_connections
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -31,6 +42,39 @@ from .scanners import get_all_scanner_meta, get_available_scanners
 from .tasks import run_audit_task
 
 logger = logging.getLogger(__name__)
+
+
+def _dispatch_audit(audit_id: int) -> None:
+    """
+    Despacha la ejecución de un audit.
+
+    - Si hay broker Celery real (no EAGER): encola la task vía `.delay()`.
+    - Si estamos en EAGER (free tier sin worker): ejecuta `run_audit` en
+      un thread daemon para no bloquear el request HTTP. El thread cierra
+      las conexiones de DB al terminar (Django abre una por thread).
+    """
+    if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
+        def _worker():
+            try:
+                from .models import Audit as _Audit
+                from .services import run_audit
+                audit_obj = _Audit.objects.get(pk=audit_id)
+                run_audit(audit_obj)
+            except Exception:
+                logger.exception("Thread audit %s crashed", audit_id)
+            finally:
+                # Cada thread en Django tiene su propia conexión a DB.
+                # Si no la cerramos, el pool se queda con conexiones zombis.
+                close_old_connections()
+
+        t = threading.Thread(
+            target=_worker,
+            name=f"audit-{audit_id}",
+            daemon=True,
+        )
+        t.start()
+    else:
+        run_audit_task.delay(audit_id)
 
 
 @login_required
@@ -61,19 +105,26 @@ def create_audit(request: HttpRequest) -> HttpResponse:
                 audit.status = AuditStatus.PENDING
                 audit.save()
 
-                # Intentar despachar al worker Celery.
-                # Si no hay broker disponible (free tier sin worker),
-                # marcar la auditoría como FAILED y redirigir al dashboard.
+                # Despacho: a broker Celery si existe, o a thread daemon
+                # en free tier (ver `_dispatch_audit`).
                 try:
-                    run_audit_task.delay(audit.pk)
-                    messages.info(request, "Auditoría en cola. Los resultados aparecerán en breve.")
-                except Exception as broker_exc:
-                    logger.warning("Celery broker not available: %s", broker_exc)
+                    _dispatch_audit(audit.pk)
+                    messages.info(
+                        request,
+                        "Auditoría en cola. Los resultados aparecerán en breve.",
+                    )
+                except Exception as dispatch_exc:
+                    logger.exception("Error despachando audit %s", audit.pk)
                     audit.status = AuditStatus.FAILED
-                    audit.error_message = "Worker no disponible. Sin worker activo las auditorías no pueden ejecutarse."
+                    audit.error_message = (
+                        f"No se pudo despachar la auditoría: {dispatch_exc}"
+                    )
                     audit.finished_at = timezone.now()
                     audit.save()
-                    messages.error(request, "No hay worker disponible para ejecutar la auditoría. El plan gratuito de Render no incluye worker.")
+                    messages.error(
+                        request,
+                        "Error al lanzar la auditoría. Revisa los logs.",
+                    )
                     return redirect("users:dashboard")
 
                 return redirect("audits:status", pk=audit.pk)
