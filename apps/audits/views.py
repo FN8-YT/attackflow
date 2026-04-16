@@ -13,6 +13,8 @@ Tres preocupaciones transversales:
 """
 from __future__ import annotations
 
+import logging
+
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -28,78 +30,88 @@ from .models import Audit, AuditStatus
 from .scanners import get_all_scanner_meta, get_available_scanners
 from .tasks import run_audit_task
 
+logger = logging.getLogger(__name__)
+
 
 @login_required
 @ratelimit(key="user", rate="10/h", method="POST", block=True)
 def create_audit(request: HttpRequest) -> HttpResponse:
     """Crea una auditoría y la despacha al worker Celery."""
-    month_start = timezone.now().replace(
-        day=1, hour=0, minute=0, second=0, microsecond=0
-    )
-    monthly_count = Audit.objects.filter(
-        user=request.user, created_at__gte=month_start
-    ).count()
-    remaining = request.user.monthly_audit_quota - monthly_count
+    try:
+        month_start = timezone.now().replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        monthly_count = Audit.objects.filter(
+            user=request.user, created_at__gte=month_start
+        ).count()
+        remaining = request.user.monthly_audit_quota - monthly_count
 
-    if request.method == "POST":
-        if remaining <= 0:
-            messages.error(
-                request,
-                "Has alcanzado tu cuota mensual. Actualiza tu plan o espera al próximo mes.",
-            )
-            return redirect("users:dashboard")
+        if request.method == "POST":
+            if remaining <= 0:
+                messages.error(
+                    request,
+                    "Has alcanzado tu cuota mensual. Actualiza tu plan o espera al próximo mes.",
+                )
+                return redirect("users:dashboard")
 
-        form = AuditForm(request.POST, user=request.user)
-        if form.is_valid():
-            audit = form.save(commit=False)
-            audit.user = request.user
-            audit.status = AuditStatus.PENDING
-            audit.save()
+            form = AuditForm(request.POST, user=request.user)
+            if form.is_valid():
+                audit = form.save(commit=False)
+                audit.user = request.user
+                audit.status = AuditStatus.PENDING
+                audit.save()
 
-            # Intentar despachar al worker Celery.
-            # Si no hay broker disponible (free tier sin worker),
-            # ejecutar síncronamente en el proceso web.
-            try:
-                run_audit_task.delay(audit.pk)
-                messages.info(request, "Auditoría en cola. Los resultados aparecerán en breve.")
-            except Exception:
-                # Sin broker: ejecutar aquí mismo (puede tardar ~30–60 s).
-                messages.info(request, "Ejecutando auditoría (puede tardar hasta 60 s)…")
-                run_audit_task(audit.pk)
+                # Intentar despachar al worker Celery.
+                # Si no hay broker disponible (free tier sin worker),
+                # marcar la auditoría como FAILED y redirigir al dashboard.
+                try:
+                    run_audit_task.delay(audit.pk)
+                    messages.info(request, "Auditoría en cola. Los resultados aparecerán en breve.")
+                except Exception as broker_exc:
+                    logger.warning("Celery broker not available: %s", broker_exc)
+                    audit.status = AuditStatus.FAILED
+                    audit.error_message = "Worker no disponible. Sin worker activo las auditorías no pueden ejecutarse."
+                    audit.finished_at = timezone.now()
+                    audit.save()
+                    messages.error(request, "No hay worker disponible para ejecutar la auditoría. El plan gratuito de Render no incluye worker.")
+                    return redirect("users:dashboard")
 
-            return redirect("audits:status", pk=audit.pk)
-    else:
-        form = AuditForm(user=request.user)
+                return redirect("audits:status", pk=audit.pk)
+        else:
+            form = AuditForm(user=request.user)
 
-    # Metadata de scanners para el template (checkboxes + locks).
-    has_advanced = request.user.has_feature("advanced_scanners")
-    all_scanners = get_all_scanner_meta()
-    available_keys = {
-        m.key for m in get_available_scanners("active", has_advanced)
-    }
+        # Metadata de scanners para el template (checkboxes + locks).
+        has_advanced = request.user.has_feature("advanced_scanners")
+        all_scanners = get_all_scanner_meta()
+        available_keys = {
+            m.key for m in get_available_scanners("active", has_advanced)
+        }
 
-    scanner_data = []
-    for meta in all_scanners:
-        scanner_data.append({
-            "key": meta.key,
-            "label": meta.label,
-            "description": meta.description,
-            "tier": meta.tier,
-            "default": meta.default,
-            "icon": meta.icon,
-            "available": meta.key in available_keys,
-        })
+        scanner_data = []
+        for meta in all_scanners:
+            scanner_data.append({
+                "key": meta.key,
+                "label": meta.label,
+                "description": meta.description,
+                "tier": meta.tier,
+                "default": meta.default,
+                "icon": meta.icon,
+                "available": meta.key in available_keys,
+            })
 
-    return render(
-        request,
-        "audits/new.html",
-        {
-            "form": form,
-            "remaining": remaining,
-            "has_advanced": has_advanced,
-            "scanner_data": scanner_data,
-        },
-    )
+        return render(
+            request,
+            "audits/new.html",
+            {
+                "form": form,
+                "remaining": remaining,
+                "has_advanced": has_advanced,
+                "scanner_data": scanner_data,
+            },
+        )
+    except Exception as e:
+        logger.exception("create_audit error: %s", e)
+        raise
 
 
 @login_required
