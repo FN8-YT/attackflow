@@ -203,17 +203,30 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # ---------------------------------------------------------------------------
 # REDIS_URL es la URL base. En dev tenemos URLs separadas por DB number.
 # En Render/Upstash se usa la misma URL para todo (no soportan multi-DB).
-_redis_url = env("REDIS_URL")
+# Fallback a locmem si no hay REDIS_URL (evita crashear en arranque).
+_redis_url = env("REDIS_URL", default="")
 
-CACHES = {
-    "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": _redis_url,
-        "OPTIONS": {
-            "CLIENT_CLASS": "django_redis.client.DefaultClient",
-        },
+if _redis_url:
+    # Opciones SSL para Upstash (rediss://). `ssl_cert_reqs=none` desactiva
+    # la verificación estricta del cert, que Upstash no firma con CA pública.
+    _redis_cache_options = {"CLIENT_CLASS": "django_redis.client.DefaultClient"}
+    if _redis_url.startswith("rediss://"):
+        _redis_cache_options["CONNECTION_POOL_KWARGS"] = {"ssl_cert_reqs": None}
+
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": _redis_url,
+            "OPTIONS": _redis_cache_options,
+        }
     }
-}
+else:
+    # Sin Redis: memoria local (solo sirve para tests / arranque sin cache).
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        }
+    }
 
 # ---------------------------------------------------------------------------
 # Celery
@@ -228,6 +241,22 @@ CELERY_WORKER_PREFETCH_MULTIPLIER = 1     # Justo para tareas largas como audito
 CELERY_TASK_TIME_LIMIT = 300              # Hard kill a los 5 min
 CELERY_TASK_SOFT_TIME_LIMIT = 270         # Aviso a los 4:30
 CELERY_TIMEZONE = TIME_ZONE
+
+# SSL para Upstash Redis (rediss://) — solo si el broker es SSL.
+if CELERY_BROKER_URL and CELERY_BROKER_URL.startswith("rediss://"):
+    import ssl
+    CELERY_BROKER_USE_SSL = {"ssl_cert_reqs": ssl.CERT_NONE}
+    CELERY_REDIS_BACKEND_USE_SSL = {"ssl_cert_reqs": ssl.CERT_NONE}
+
+# CELERY_TASK_ALWAYS_EAGER: cuando es True, las tasks se ejecutan
+# síncronamente en el mismo proceso que las invoca (sin pasar por el
+# broker). Imprescindible en Render free tier (no hay worker).
+# Valor por defecto True si no hay broker configurado.
+CELERY_TASK_ALWAYS_EAGER = env.bool(
+    "CELERY_TASK_ALWAYS_EAGER",
+    default=not bool(CELERY_BROKER_URL),
+)
+CELERY_TASK_EAGER_PROPAGATES = True   # Re-lanza excepciones en modo eager
 
 # Beat schedule: tarea periódica de monitorización.
 # Se ejecuta cada 60s. La lógica "is_due" dentro de la tarea
