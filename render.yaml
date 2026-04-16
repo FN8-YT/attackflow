@@ -45,7 +45,7 @@ services:
         value: attackflow-web.onrender.com   # actualiza con tu dominio personalizado
 
       # SECRET_KEY: genera con `python -c "import secrets; print(secrets.token_hex(50))"`
-      - key: DJANGO_SECRET_KEY
+      - key: 54d6a60476ea30c1feb7b4bda224f11d67bd2727bff64821781c1f8e101bdcc43514f17dc1c9c7fd8667c8fe16ca53293d1d
         sync: false           # se rellena a mano en el dashboard (valor sensible)
 
       # Base de datos: Render inyecta la URL automáticamente desde el bloque "databases"
@@ -55,11 +55,11 @@ services:
           property: connectionString
 
       # Redis: URL de Upstash (se rellena a mano en el dashboard)
-      - key: REDIS_URL
+      - key: redis-cli --tls -u redis://default:gQAAAAAAATfQAAIncDI4NWE0MjAyOWFkYjY0ODcyYWQ1YjE5Njk2YWNjYjAwYXAyNzk4MjQ@top-polecat-79824.upstash.io:6379
         sync: false
 
       # Email (Resend)
-      - key: EMAIL_HOST
+      - key: re_HZmRji38_23ShQQENK4iMWqedGvueG2jg
         value: smtp.resend.com
       - key: EMAIL_PORT
         value: "587"
