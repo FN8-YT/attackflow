@@ -116,6 +116,13 @@ class User(AbstractUser):
         verbose_name_plural = _("users")
         ordering = ("-date_joined",)
 
+    def save(self, *args, **kwargs) -> None:
+        # Los superusuarios siempre se consideran verificados:
+        # createsuperuser no pasa por el flujo de email.
+        if self.is_superuser:
+            self.is_verified = True
+        super().save(*args, **kwargs)
+
     def __str__(self) -> str:
         return self.email
 
