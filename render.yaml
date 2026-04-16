@@ -1,0 +1,166 @@
+# =========================================================
+# render.yaml — Blueprint de infraestructura para Render.com
+#
+# Servicios:
+#   - attackflow-web    : Django + Gunicorn  (plan Starter $7/mes)
+#   - attackflow-worker : Celery worker+beat (plan Starter $7/mes)
+#   - attackflow-db     : PostgreSQL managed (plan Free, 90 días gratis)
+#
+# Redis: usa Upstash (https://upstash.com) — free tier, externo a Render.
+#        Añade REDIS_URL manualmente en el dashboard de Render.
+#
+# Despliegue:
+#   1. Sube el repo a GitHub
+#   2. En Render → New → Blueprint → conecta el repo
+#   3. Render lee este archivo y crea todo automáticamente
+#   4. Añade las variables secretas que faltan (marcadas con sync: false)
+# =========================================================
+
+services:
+
+  # ── Web: Django + Gunicorn ─────────────────────────────────────
+  - type: web
+    name: attackflow-web
+    runtime: docker
+    plan: starter           # $7/mes — always on, sin sleep
+    healthCheckPath: /accounts/login/
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+
+    # Render inyecta PORT automáticamente; Gunicorn lo lee aquí.
+    startCommand: >
+      gunicorn config.wsgi:application
+        --bind 0.0.0.0:$PORT
+        --workers 2
+        --timeout 60
+        --access-logfile -
+        --error-logfile -
+
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.prod
+      - key: DJANGO_DEBUG
+        value: "False"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: attackflow-web.onrender.com   # actualiza con tu dominio personalizado
+
+      # SECRET_KEY: genera con `python -c "import secrets; print(secrets.token_hex(50))"`
+      - key: DJANGO_SECRET_KEY
+        sync: false           # se rellena a mano en el dashboard (valor sensible)
+
+      # Base de datos: Render inyecta la URL automáticamente desde el bloque "databases"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: attackflow-db
+          property: connectionString
+
+      # Redis: URL de Upstash (se rellena a mano en el dashboard)
+      - key: REDIS_URL
+        sync: false
+
+      # Email (Resend)
+      - key: EMAIL_HOST
+        value: smtp.resend.com
+      - key: EMAIL_PORT
+        value: "587"
+      - key: EMAIL_HOST_USER
+        value: resend
+      - key: EMAIL_HOST_PASSWORD
+        sync: false           # tu API key de Resend: re_xxxxx
+      - key: DEFAULT_FROM_EMAIL
+        value: "AttackFlow <noreply@tudominio.com>"   # cambia con tu dominio
+
+      # Postgres vars individuales (usadas por migrate en build.sh)
+      # Render las rellena automáticamente desde el bloque "databases"
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: attackflow-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: attackflow-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: attackflow-db
+          property: password
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: attackflow-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: attackflow-db
+          property: port
+
+      - key: DISABLE_PLAN_LIMITS
+        value: "False"
+
+  # ── Worker: Celery worker + beat en un solo proceso ────────────
+  # Combinar worker y beat ahorra $7/mes respecto a dos servicios.
+  # Para MVP es suficiente. En producción alta sepáralos.
+  - type: worker
+    name: attackflow-worker
+    runtime: docker
+    plan: starter             # $7/mes — los workers no tienen free tier
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+
+    # --beat incrusta el scheduler en el worker (un solo proceso)
+    startCommand: >
+      celery -A config worker
+        --beat
+        --loglevel=info
+        --concurrency=2
+        --scheduler celery.beat:PersistentScheduler
+
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.prod
+      - key: DJANGO_DEBUG
+        value: "False"
+      - key: DJANGO_SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: attackflow-db
+          property: connectionString
+      - key: REDIS_URL
+        sync: false
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: attackflow-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: attackflow-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: attackflow-db
+          property: password
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: attackflow-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: attackflow-db
+          property: port
+      - key: DEFAULT_FROM_EMAIL
+        value: "AttackFlow <noreply@tudominio.com>"
+      - key: EMAIL_HOST
+        value: smtp.resend.com
+      - key: EMAIL_PORT
+        value: "587"
+      - key: EMAIL_HOST_USER
+        value: resend
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+
+# ── Base de datos gestionada por Render ────────────────────────
+databases:
+  - name: attackflow-db
+    plan: free              # Gratis 90 días, luego $7/mes
+    databaseName: attackflow
+    user: attackflow

@@ -1,0 +1,102 @@
+{% load static %}<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verifica tu email — AttackFlow</title>
+    <link rel="stylesheet" href="{% static 'css/main.css' %}">
+</head>
+<body>
+
+<canvas id="matrix-canvas"></canvas>
+<div class="crt-overlay"></div>
+<div class="flicker-overlay" id="flicker-overlay"></div>
+
+<div class="auth-wrap">
+    <div class="auth-card">
+
+        <div style="text-align:center; margin-bottom:1.2rem;">
+            <img src="{% static 'img/logo.png' %}" alt="AttackFlow" class="auth-brand-logo"
+                 onerror="this.style.display='none'">
+            <h1 style="font-size:1.1rem; margin-bottom:.15rem;">ATTACKFLOW</h1>
+            <p class="muted" style="letter-spacing:.12em; font-size:.78rem;">EMAIL VERIFICATION REQUIRED</p>
+        </div>
+
+        <div class="terminal" style="margin-bottom:1rem;">
+            <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">verify</span> <span class="flag">--email</span></div>
+            <div class="output">> Verification link sent</div>
+            <div class="output">> Awaiting confirmation<span class="cursor"></span></div>
+        </div>
+
+        {% if messages %}
+        {% for message in messages %}
+        <div style="margin-bottom:.8rem;padding:.5rem .7rem;font-size:.72rem;
+            background:{% if 'error' in message.tags %}rgba(220,50,50,.1){% else %}rgba(26,173,23,.08){% endif %};
+            border-left:2px solid {% if 'error' in message.tags %}var(--red){% else %}var(--green){% endif %};
+            color:{% if 'error' in message.tags %}var(--red){% else %}var(--green-bright){% endif %};">
+            {{ message }}
+        </div>
+        {% endfor %}
+        {% endif %}
+
+        <div class="card">
+            <!-- Status icon -->
+            <div style="text-align:center;margin-bottom:1.2rem;">
+                <div style="font-size:2.5rem;margin-bottom:.5rem;">✉</div>
+                <div style="color:var(--green-bright);font-size:.9rem;font-weight:600;margin-bottom:.3rem;">
+                    Revisa tu bandeja de entrada
+                </div>
+                {% if email %}
+                <div style="color:var(--text-gray);font-size:.75rem;">
+                    Hemos enviado un enlace de verificación a:<br>
+                    <strong style="color:var(--xp-blue);">{{ email }}</strong>
+                </div>
+                {% else %}
+                <div style="color:var(--text-gray);font-size:.75rem;">
+                    Hemos enviado un enlace de verificación a tu dirección de email.
+                </div>
+                {% endif %}
+            </div>
+
+            <div style="background:var(--chrome);border:1px solid var(--chrome-border);
+                        padding:.7rem .9rem;margin-bottom:1.2rem;font-size:.68rem;
+                        line-height:1.9;color:var(--text-gray);">
+                <div style="color:var(--xp-blue);font-size:.62rem;letter-spacing:.08em;margin-bottom:.3rem;font-weight:600;">INSTRUCCIONES</div>
+                <div>1. Abre el email de AttackFlow en tu bandeja</div>
+                <div>2. Haz clic en el enlace de verificación</div>
+                <div>3. El enlace es válido durante <strong style="color:var(--green-bright);">24 horas</strong></div>
+                <div style="margin-top:.4rem;color:var(--gray-dim);font-size:.62rem;">
+                    ¿No lo ves? Revisa la carpeta de spam o solicita un nuevo enlace.
+                </div>
+            </div>
+
+            <!-- Resend form -->
+            <div style="border-top:1px solid var(--chrome-border);padding-top:1rem;">
+                <div style="color:var(--text-gray);font-size:.68rem;margin-bottom:.6rem;letter-spacing:.06em;">
+                    ¿NO RECIBISTE EL EMAIL? REENVIAR:
+                </div>
+                <form method="post" action="{% url 'users:resend_verification' %}" style="display:flex;gap:.5rem;">
+                    {% csrf_token %}
+                    <input type="email" name="email"
+                           value="{{ email }}"
+                           placeholder="tu@email.com"
+                           required
+                           style="flex:1;background:var(--chrome);border:1px solid var(--chrome-border);
+                                  color:var(--green-bright);font-family:inherit;font-size:.75rem;
+                                  padding:.4rem .6rem;outline:none;min-width:0;">
+                    <button type="submit" class="btn btn-primary btn-sm" style="flex-shrink:0;">
+                        reenviar
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <p class="muted" style="text-align:center; margin-top:1rem; margin-bottom:0; font-size:.78rem;">
+            ¿Ya verificaste? <a href="{% url 'login' %}">Iniciar sesión</a>
+        </p>
+    </div>
+</div>
+
+<script src="{% static 'js/matrix.js' %}"></script>
+</body>
+</html>

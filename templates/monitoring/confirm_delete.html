@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Delete {{ target.name }} — AttackFlow{% endblock %}
+
+{% block content %}
+<p><a href="{% url 'monitoring:detail' target.pk %}" class="muted small">&lt; back_to_target</a></p>
+
+<div style="max-width:480px;">
+    <div class="card" style="border-color:rgba(220,50,50,.3);">
+        <div class="card-header">
+            <span style="color:var(--red);">confirm_delete</span>
+        </div>
+        <div style="color:var(--text-gray);font-size:.78rem;line-height:1.7;margin-bottom:1.2rem;">
+            <p>¿Eliminar el target <strong style="color:var(--green-bright);">{{ target.name }}</strong>?</p>
+            <p>Se borrarán todos los checks y cambios asociados. Esta acción es irreversible.</p>
+            <p style="font-size:.68rem;color:var(--text-muted);">URL: {{ target.url }}</p>
+        </div>
+        <form method="post" style="display:flex;gap:.6rem;">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm" style="background:rgba(220,50,50,.15);border-color:rgba(220,50,50,.4);color:var(--red);">
+                ✕ delete permanently
+            </button>
+            <a href="{% url 'monitoring:detail' target.pk %}" class="btn btn-ghost btn-sm">cancel</a>
+        </form>
+    </div>
+</div>
+{% endblock %}

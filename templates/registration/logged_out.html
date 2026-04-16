@@ -1,0 +1,37 @@
+{% load static %}<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Disconnected — AttackFlow</title>
+    <link rel="stylesheet" href="{% static 'css/main.css' %}">
+</head>
+<body>
+
+<canvas id="matrix-canvas"></canvas>
+<div class="crt-overlay"></div>
+
+<div class="auth-wrap">
+    <div class="auth-card">
+        <div style="text-align:center; margin-bottom:1.2rem;">
+            <img src="{% static 'img/logo.png' %}" alt="AttackFlow" class="auth-brand-logo"
+                 onerror="this.style.display='none'">
+            <h1 style="font-size:1.1rem;">CONNECTION TERMINATED</h1>
+        </div>
+
+        <div class="terminal">
+            <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">session</span> <span class="flag">--destroy</span></div>
+            <div class="output">> Session tokens invalidated</div>
+            <div class="output">> All connections closed</div>
+            <div class="output">> Goodbye, operator.<span class="cursor"></span></div>
+        </div>
+
+        <div style="text-align:center; margin-top:1rem;">
+            <a href="{% url 'login' %}" class="btn btn-primary">RECONNECT</a>
+        </div>
+    </div>
+</div>
+
+<script src="{% static 'js/matrix.js' %}"></script>
+</body>
+</html>

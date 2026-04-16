@@ -1,0 +1,272 @@
+{% extends "base.html" %}
+{% block title %}{{ target.name }} — Monitor — AttackFlow{% endblock %}
+
+{% block content %}
+<p><a href="{% url 'monitoring:dashboard' %}" class="muted small">&lt; back_to_monitoring</a></p>
+
+<!-- Terminal header -->
+<div class="terminal" style="margin-bottom:1.4rem;">
+    <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">monitor</span> <span class="flag">--target</span> <span class="cmd">{{ target.url }}</span></div>
+    <div class="output">> Name: {{ target.name }}</div>
+    <div class="output">> Interval: every {{ target.check_interval }} min // Status:
+        <span style="color:{% if target.current_status == 'up' %}var(--green-bright){% elif target.current_status == 'down' %}var(--red){% elif target.current_status == 'error' %}var(--orange){% else %}var(--text-gray){% endif %};">
+            {{ target.current_status|upper }}
+        </span>
+        <span class="cursor"></span>
+    </div>
+</div>
+
+<!-- Metrics row -->
+<div class="stats" style="margin-bottom:1.4rem;">
+    <div class="stat-card" style="text-align:center;">
+        <div class="stat-val" style="font-size:1.6rem;
+            color:{% if target.current_status == 'up' %}var(--green-bright){% elif target.current_status == 'down' %}var(--red){% elif target.current_status == 'error' %}var(--orange){% else %}var(--gray){% endif %};">
+            {{ target.current_status|upper }}
+        </div>
+        <div class="stat-label">current status</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-val" style="color:{% if target.uptime_pct and target.uptime_pct >= 99 %}var(--green-bright){% elif target.uptime_pct and target.uptime_pct >= 90 %}var(--orange){% else %}var(--red){% endif %};">
+            {% if target.uptime_pct %}{{ target.uptime_pct }}%{% else %}—{% endif %}
+        </div>
+        <div class="stat-label">uptime (last 30)</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-val" style="color:{% if target.last_response_ms and target.last_response_ms > 3000 %}var(--red){% elif target.last_response_ms and target.last_response_ms > 1000 %}var(--orange){% else %}var(--green-bright){% endif %};">
+            {% if target.last_response_ms %}{{ target.last_response_ms }}ms{% else %}—{% endif %}
+        </div>
+        <div class="stat-label">last response</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-val" style="color:{% if target.last_ssl_days and target.last_ssl_days <= 7 %}var(--red){% elif target.last_ssl_days and target.last_ssl_days <= 30 %}var(--orange){% else %}var(--green-bright){% endif %};">
+            {% if target.last_ssl_days %}{{ target.last_ssl_days }}d{% else %}—{% endif %}
+        </div>
+        <div class="stat-label">ssl days left</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-val" style="color:{% if target.consecutive_failures > 0 %}var(--red){% else %}var(--text-gray){% endif %};">
+            {{ target.consecutive_failures }}
+        </div>
+        <div class="stat-label">consec. failures</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-val" style="color:var(--xp-blue);">{{ target.recent_changes_count }}</div>
+        <div class="stat-label">changes 24h</div>
+    </div>
+</div>
+
+<!-- Actions bar -->
+<div style="display:flex;gap:.5rem;align-items:center;margin-bottom:1.4rem;flex-wrap:wrap;">
+    <form method="post" action="{% url 'monitoring:run_now' target.pk %}">
+        {% csrf_token %}
+        <button class="btn btn-primary btn-sm" type="submit">▶ check now</button>
+    </form>
+    <form method="post" action="{% url 'monitoring:toggle' target.pk %}">
+        {% csrf_token %}
+        <button class="btn btn-ghost btn-sm" type="submit">
+            {% if target.is_active %}⏸ pause{% else %}▶ resume{% endif %}
+        </button>
+    </form>
+    <a href="{% url 'monitoring:delete' target.pk %}" class="btn btn-ghost btn-sm" style="color:var(--red);border-color:rgba(220,50,50,.3);">✕ delete</a>
+    <div style="flex:1;"></div>
+    <div style="color:var(--text-gray);font-size:.68rem;">
+        last check: {% if target.last_check_at %}{{ target.last_check_at|date:"d/m/Y H:i:s" }}{% else %}never{% endif %}
+    </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 300px;gap:1.2rem;align-items:start;">
+
+<!-- ── Left: checks history ─── -->
+<div>
+    <!-- Response time mini-chart -->
+    {% if checks %}
+    <div class="card" style="margin-bottom:1.2rem;">
+        <div class="card-header">
+            <span>response_time_history</span>
+            <span class="muted small">last {{ checks|length }} checks</span>
+        </div>
+        <div style="display:flex;align-items:flex-end;gap:2px;height:48px;padding:.4rem 0;">
+            {% for check in checks reversed %}
+            {% with check.response_time_ms as ms %}
+            <div title="{{ check.created_at|date:'d/m H:i' }} // {% if ms %}{{ ms }}ms{% else %}{{ check.status }}{% endif %}"
+                 style="flex:1;min-width:4px;max-width:16px;
+                     background:{% if check.status == 'up' %}{% if ms and ms > 3000 %}var(--red){% elif ms and ms > 1000 %}var(--orange){% else %}var(--green){% endif %}{% elif check.status == 'down' %}var(--red){% else %}var(--orange){% endif %};
+                     height:{% if ms %}{% widthratio ms 5000 100 %}%{% else %}8%{% endif %};
+                     min-height:4px;
+                     opacity:.8;transition:opacity .2s;" onmouseenter="this.style.opacity=1" onmouseleave="this.style.opacity=.8">
+            </div>
+            {% endwith %}
+            {% endfor %}
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:.6rem;color:var(--gray-dim);">
+            <span>{{ checks.last.created_at|date:"d/m H:i" }}</span>
+            <span>now</span>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Check log -->
+    <div class="card">
+        <div class="card-header">
+            <span>check_log</span>
+            <span class="muted small">{{ checks|length }} entries</span>
+        </div>
+
+        {% if checks %}
+        <div style="display:flex;flex-direction:column;gap:.3rem;">
+            {% for check in checks %}
+            <div style="display:grid;grid-template-columns:auto 1fr auto auto auto;gap:.6rem;align-items:center;
+                        padding:.35rem .5rem;background:var(--chrome);font-size:.68rem;
+                        border-left:2px solid {% if check.status == 'up' %}var(--green){% elif check.status == 'down' %}var(--red){% else %}var(--orange){% endif %};">
+                <!-- Status -->
+                <span style="color:{% if check.status == 'up' %}var(--green-bright){% elif check.status == 'down' %}var(--red){% else %}var(--orange){% endif %};font-weight:600;letter-spacing:.06em;min-width:3.5rem;">
+                    {{ check.status|upper }}
+                </span>
+                <!-- Timestamp -->
+                <span style="color:var(--text-gray);">{{ check.created_at|date:"d/m H:i:s" }}</span>
+                <!-- HTTP -->
+                <span style="color:{% if check.http_status_code and check.http_status_code >= 500 %}var(--red){% elif check.http_status_code and check.http_status_code >= 400 %}var(--orange){% else %}var(--text-gray){% endif %};">
+                    {% if check.http_status_code %}HTTP {{ check.http_status_code }}{% else %}—{% endif %}
+                </span>
+                <!-- Response time -->
+                <span style="color:{% if check.response_time_ms and check.response_time_ms > 3000 %}var(--red){% elif check.response_time_ms and check.response_time_ms > 1000 %}var(--orange){% else %}var(--text-gray){% endif %};min-width:4rem;text-align:right;">
+                    {% if check.response_time_ms %}{{ check.response_time_ms }}ms{% else %}—{% endif %}
+                </span>
+                <!-- SSL days -->
+                <span style="color:{% if check.ssl_expiry_days and check.ssl_expiry_days <= 7 %}var(--red){% elif check.ssl_expiry_days and check.ssl_expiry_days <= 30 %}var(--orange){% else %}var(--gray-dim){% endif %};min-width:3rem;text-align:right;">
+                    {% if check.ssl_expiry_days %}ssl {{ check.ssl_expiry_days }}d{% endif %}
+                </span>
+            </div>
+            {% if check.error_message %}
+            <div style="font-size:.63rem;color:var(--red);padding:.2rem .5rem .35rem 1rem;margin-top:-.3rem;background:rgba(220,50,50,.06);border-left:2px solid rgba(220,50,50,.2);">
+                {{ check.error_message|truncatechars:120 }}
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+        {% else %}
+        <div style="color:var(--text-gray);font-size:.72rem;padding:.5rem;text-align:center;">
+            no checks yet — first check will run at the next scheduled interval
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- ── Right: changes + SSL info ─── -->
+<div style="display:flex;flex-direction:column;gap:1rem;">
+
+    <!-- SSL / cert info -->
+    {% with checks.0 as last %}
+    {% if last and last.ssl_issuer %}
+    <div class="sys-widget">
+        <div class="sys-widget-header">
+            <span>ssl_certificate</span>
+            <span class="xp-dots"><span class="xp-dot"></span><span class="xp-dot"></span><span class="xp-dot xp-dot-close"></span></span>
+        </div>
+        <div class="sys-widget-body" style="font-size:.68rem;line-height:1.9;color:var(--text-gray);">
+            <div><span style="color:var(--gray-dim);">issuer </span>{{ last.ssl_issuer }}</div>
+            <div><span style="color:var(--gray-dim);">expires </span>
+                <span style="color:{% if last.ssl_expiry_days and last.ssl_expiry_days <= 7 %}var(--red){% elif last.ssl_expiry_days and last.ssl_expiry_days <= 30 %}var(--orange){% else %}var(--green-bright){% endif %};">
+                    {{ last.ssl_expiry_days|default:"?" }}d
+                </span>
+            </div>
+            {% if last.ssl_fingerprint %}
+            <div style="font-size:.6rem;word-break:break-all;"><span style="color:var(--gray-dim);">sha256 </span>{{ last.ssl_fingerprint }}</div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+    {% endwith %}
+
+    <!-- Last headers snapshot -->
+    {% with checks.0 as last %}
+    {% if last and last.headers_snapshot %}
+    <div class="sys-widget">
+        <div class="sys-widget-header">
+            <span>security_headers</span>
+            <span class="xp-dots"><span class="xp-dot"></span><span class="xp-dot"></span><span class="xp-dot xp-dot-close"></span></span>
+        </div>
+        <div class="sys-widget-body" style="font-size:.63rem;line-height:1.8;color:var(--text-gray);">
+            {% for hdr, val in last.headers_snapshot.items %}
+            <div style="margin-bottom:.2rem;">
+                <div style="color:var(--xp-blue);font-size:.6rem;">{{ hdr }}</div>
+                <div style="color:var(--text-dim);word-break:break-all;">{{ val|truncatechars:80 }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+    {% endwith %}
+
+    <!-- Changes list -->
+    <div class="sys-widget">
+        <div class="sys-widget-header">
+            <span>detected_changes</span>
+            <span class="xp-dots"><span class="xp-dot"></span><span class="xp-dot"></span><span class="xp-dot xp-dot-close"></span></span>
+        </div>
+        <div class="sys-widget-body" style="max-height:420px;overflow-y:auto;">
+            {% if changes %}
+            {% for change in changes %}
+            <div style="padding:.4rem 0;border-bottom:1px solid var(--chrome-border);font-size:.68rem;line-height:1.5;">
+                <div style="display:flex;align-items:center;gap:.4rem;margin-bottom:.15rem;">
+                    <span style="color:
+                        {% if change.severity == 'critical' %}var(--red)
+                        {% elif change.severity == 'high' %}var(--orange)
+                        {% elif change.severity == 'medium' %}#ccaa00
+                        {% elif change.severity == 'low' %}var(--xp-blue)
+                        {% else %}var(--text-gray){% endif %};
+                        font-weight:700;letter-spacing:.05em;font-size:.58rem;text-transform:uppercase;">
+                        {{ change.severity }}
+                    </span>
+                    <span style="color:var(--gray-dim);font-size:.6rem;">{{ change.created_at|date:"d/m H:i" }}</span>
+                </div>
+                <div style="color:var(--text-dim);">{{ change.description }}</div>
+                {% if change.old_value or change.new_value %}
+                <details style="margin-top:.25rem;">
+                    <summary style="color:var(--xp-blue);font-size:.6rem;cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:.3rem;">
+                        <span style="display:inline-block;width:0;height:0;border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:5px solid var(--xp-blue);transition:transform .2s;"></span>
+                        diff
+                    </summary>
+                    {% if change.old_value %}
+                    <div style="margin-top:.3rem;font-size:.6rem;color:var(--red);background:rgba(220,50,50,.06);padding:.2rem .4rem;word-break:break-all;">- {{ change.old_value }}</div>
+                    {% endif %}
+                    {% if change.new_value %}
+                    <div style="font-size:.6rem;color:var(--green);background:rgba(26,173,23,.06);padding:.2rem .4rem;word-break:break-all;">+ {{ change.new_value }}</div>
+                    {% endif %}
+                </details>
+                {% endif %}
+            </div>
+            {% endfor %}
+            {% else %}
+            <div style="color:var(--text-gray);font-size:.7rem;padding:.5rem 0;text-align:center;opacity:.6;">
+                no changes detected yet
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+</div>
+</div><!-- /grid -->
+
+<script>
+// Auto-refresh status every 15s
+const TARGET_ID = {{ target.pk }};
+async function refreshStatus() {
+    try {
+        const r = await fetch(`/monitoring/${TARGET_ID}/status.json/`);
+        if (!r.ok) return;
+        const d = await r.json();
+        // Could update DOM elements here if needed
+    } catch(e) {}
+}
+setInterval(refreshStatus, 15000);
+
+// Details triangle animation
+document.querySelectorAll('details').forEach(el => {
+    el.addEventListener('toggle', () => {
+        const arrow = el.querySelector('summary span');
+        if (arrow) arrow.style.transform = el.open ? 'rotate(90deg)' : '';
+    });
+});
+</script>
+{% endblock %}

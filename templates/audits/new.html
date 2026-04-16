@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}New Scan — AttackFlow{% endblock %}
+
+{% block content %}
+<!-- Terminal header -->
+<div class="terminal" style="margin-bottom:1.4rem;">
+    <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">scan</span> <span class="flag">--init --target</span> <span class="cmd">&lt;pending&gt;</span></div>
+    <div class="output">> Quota remaining: <span style="color:var(--green-bright);">{{ remaining }}</span> scans this cycle</div>
+    <div class="output">> Awaiting target parameters...<span class="cursor"></span></div>
+</div>
+
+<form method="post" novalidate id="scan-form">
+    {% csrf_token %}
+
+    <!-- Target + Mode -->
+    <div class="card" style="margin-bottom:1rem;">
+        <div class="card-header">
+            <span>scan_config</span>
+            <span>target</span>
+        </div>
+
+        <div class="form-group">
+            <label for="{{ form.target_url.id_for_label }}">{{ form.target_url.label }}</label>
+            {{ form.target_url }}
+            {% if form.target_url.help_text %}<span class="helptext">{{ form.target_url.help_text }}</span>{% endif %}
+            {% for error in form.target_url.errors %}<ul class="errorlist"><li>{{ error }}</li></ul>{% endfor %}
+        </div>
+
+        <div class="form-group">
+            <label for="{{ form.scan_mode.id_for_label }}">{{ form.scan_mode.label }}</label>
+            {{ form.scan_mode }}
+            {% if form.scan_mode.help_text %}<span class="helptext">{{ form.scan_mode.help_text }}</span>{% endif %}
+            {% for error in form.scan_mode.errors %}<ul class="errorlist"><li>{{ error }}</li></ul>{% endfor %}
+        </div>
+    </div>
+
+    <!-- Scanner modules -->
+    <div class="card" style="margin-bottom:1rem;">
+        <div class="card-header">
+            <span>scan_modules</span>
+            <span id="module-counter">0 / {{ scanner_data|length }}</span>
+        </div>
+
+        <div class="module-grid">
+            {% for scanner in scanner_data %}
+            <label class="module-item {% if not scanner.available %}module-locked{% endif %}"
+                   data-tier="{{ scanner.tier }}">
+                <div class="module-check">
+                    <input type="checkbox"
+                           name="selected_scanners"
+                           value="{{ scanner.key }}"
+                           {% if scanner.default and scanner.available %}checked{% endif %}
+                           {% if not scanner.available %}disabled{% endif %}
+                           class="module-checkbox">
+                    <span class="module-indicator"></span>
+                </div>
+                <div class="module-info">
+                    <div class="module-label">
+                        <span class="module-icon">{{ scanner.icon }}</span>
+                        {{ scanner.label }}
+                        {% if scanner.tier == "recon" %}
+                            <span class="badge badge-premium" style="margin-left:.3rem; font-size:.55rem;">PREMIUM</span>
+                        {% elif scanner.tier == "active" %}
+                            <span class="badge badge-high" style="margin-left:.3rem; font-size:.55rem;">ACTIVE</span>
+                        {% endif %}
+                    </div>
+                    <div class="module-desc">{{ scanner.description }}</div>
+                    {% if not scanner.available %}
+                    <div class="module-lock-msg">Requires Premium plan</div>
+                    {% endif %}
+                </div>
+            </label>
+            {% endfor %}
+        </div>
+
+        {% if form.selected_scanners.errors %}
+        <ul class="errorlist">{% for e in form.selected_scanners.errors %}<li>{{ e }}</li>{% endfor %}</ul>
+        {% endif %}
+
+        <!-- Quick actions -->
+        <div style="margin-top:.8rem; display:flex; gap:.6rem; flex-wrap:wrap;">
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-select-all">select all</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-deselect-all">deselect all</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-defaults">defaults</button>
+        </div>
+    </div>
+
+    {% if form.non_field_errors %}
+    <ul class="errorlist" style="margin-bottom:.8rem;">{% for e in form.non_field_errors %}<li>{{ e }}</li>{% endfor %}</ul>
+    {% endif %}
+
+    <button type="submit" class="btn btn-primary" style="margin-top:.2rem;">EXECUTE SCAN</button>
+
+    <div class="muted" style="margin-top:1rem; line-height:1.8; font-size:.82rem;">
+        > Scan executes asynchronously via Celery worker.<br>
+        > Only selected modules will run. You will be redirected to a live status feed.
+    </div>
+
+    {% if not has_advanced %}
+    <div style="margin-top:.6rem; padding:.5rem .7rem; border:1px solid var(--chrome-border); background:var(--chrome);border-radius:var(--radius);">
+        <span class="muted" style="font-size:.82rem;">
+            > Locked modules require PREMIUM clearance.<br>
+            > <a href="{% url 'users:plans' %}">Request upgrade</a>
+        </span>
+    </div>
+    {% endif %}
+</form>
+
+<script>
+(function(){
+    // Module counter
+    function updateCounter(){
+        var checks = document.querySelectorAll('.module-checkbox:not(:disabled)');
+        var checked = document.querySelectorAll('.module-checkbox:not(:disabled):checked');
+        var counter = document.getElementById('module-counter');
+        if(counter) counter.textContent = checked.length + ' / {{ scanner_data|length }}';
+    }
+
+    document.querySelectorAll('.module-checkbox').forEach(function(cb){
+        cb.addEventListener('change', updateCounter);
+    });
+    updateCounter();
+
+    // Quick actions
+    document.getElementById('btn-select-all').addEventListener('click', function(){
+        document.querySelectorAll('.module-checkbox:not(:disabled)').forEach(function(cb){ cb.checked = true; });
+        updateCounter();
+    });
+    document.getElementById('btn-deselect-all').addEventListener('click', function(){
+        document.querySelectorAll('.module-checkbox:not(:disabled)').forEach(function(cb){ cb.checked = false; });
+        updateCounter();
+    });
+    document.getElementById('btn-defaults').addEventListener('click', function(){
+        document.querySelectorAll('.module-checkbox:not(:disabled)').forEach(function(cb){
+            // Defaults: check all available
+            cb.checked = true;
+        });
+        updateCounter();
+    });
+
+    // Show/hide active scanners based on scan_mode
+    var modeSelect = document.getElementById('id_scan_mode');
+    if(modeSelect){
+        function toggleActiveModules(){
+            var isActive = modeSelect.value === 'active';
+            document.querySelectorAll('.module-item[data-tier="active"]').forEach(function(el){
+                if(isActive){
+                    el.classList.remove('module-locked');
+                    el.querySelector('.module-checkbox').disabled = false;
+                } else {
+                    el.classList.add('module-locked');
+                    var cb = el.querySelector('.module-checkbox');
+                    cb.disabled = true;
+                    cb.checked = false;
+                }
+            });
+            updateCounter();
+        }
+        modeSelect.addEventListener('change', toggleActiveModules);
+    }
+})();
+</script>
+{% endblock %}

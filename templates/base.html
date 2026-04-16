@@ -1,0 +1,168 @@
+{% load static %}<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}AttackFlow{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'css/main.css' %}">
+</head>
+<body>
+
+<!-- Matrix rain -->
+<canvas id="matrix-canvas"></canvas>
+<!-- CRT scanlines + vignette -->
+<div class="crt-overlay"></div>
+
+<!-- CRT flicker (fast turn-on, replaces old boot sequence) -->
+<div class="flicker-overlay" id="flicker-overlay"></div>
+
+{% block body %}
+<div class="shell">
+    <!-- ── Left sidebar ─────────────────────────────── -->
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <img src="{% static 'img/logo.png' %}" alt="AttackFlow" class="sidebar-brand-logo"
+                 onerror="this.style.display='none'">
+            <div>
+                <div class="sidebar-brand-text">ATTACKFLOW</div>
+                <div class="sidebar-brand-sub">Security Audit Platform</div>
+            </div>
+        </div>
+
+        <nav class="sidebar-nav">
+            {% if user.is_authenticated %}
+            <a href="{% url 'users:dashboard' %}"
+               class="sidebar-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                dashboard
+            </a>
+            <a href="{% url 'audits:create' %}"
+               class="sidebar-link {% if request.resolver_match.url_name == 'create' %}active{% endif %}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                new_scan
+            </a>
+            <a href="{% url 'monitoring:dashboard' %}"
+               class="sidebar-link {% if 'monitoring' in request.resolver_match.app_names %}active{% endif %}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                monitoring
+            </a>
+            <a href="{% url 'users:plans' %}"
+               class="sidebar-link {% if request.resolver_match.url_name == 'plans' %}active{% endif %}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                plans
+            </a>
+            {% if user.is_staff %}
+            <a href="{% url 'admin:index' %}" class="sidebar-link" target="_blank" rel="noopener">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+                admin
+            </a>
+            {% endif %}
+            {% endif %}
+        </nav>
+
+        {% if user.is_authenticated %}
+        <div class="sidebar-footer">
+            <div style="color:var(--text-muted);font-size:.62rem;letter-spacing:.1em;margin-bottom:.15rem;font-weight:600;">OPERATOR</div>
+            <div style="color:var(--green);font-size:.78rem;margin-bottom:.3rem;word-break:break-all;">{{ user.email }}</div>
+            <div style="margin-bottom:.5rem;">
+                <span class="badge badge-{{ user.plan }}">{{ user.get_plan_display }}</span>
+            </div>
+            <form method="post" action="{% url 'logout' %}">
+                {% csrf_token %}
+                <button class="btn btn-ghost btn-sm" type="submit">logout</button>
+            </form>
+        </div>
+        {% endif %}
+    </aside>
+
+    <!-- ── Main content ─────────────────────────────── -->
+    <main class="main">
+        {% if messages %}
+        <ul class="messages">
+            {% for message in messages %}
+            <li class="{{ message.tags }}">{{ message }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- ── Right system panel ───────────────────────── -->
+    <aside class="sys-panel">
+        <!-- Clock -->
+        <div class="sys-widget">
+            <div class="sys-widget-header">
+                <span>system time</span>
+                <span class="xp-dots"><span class="xp-dot"></span><span class="xp-dot"></span><span class="xp-dot xp-dot-close"></span></span>
+            </div>
+            <div class="sys-widget-body">
+                <div class="sys-clock" id="sys-clock">--:--:--</div>
+                <div class="sys-date" id="sys-date">-- --- ----</div>
+            </div>
+        </div>
+
+        <!-- System status -->
+        <div class="sys-widget">
+            <div class="sys-widget-header">
+                <span>system status</span>
+                <span class="xp-dots"><span class="xp-dot"></span><span class="xp-dot"></span><span class="xp-dot xp-dot-close"></span></span>
+            </div>
+            <div class="sys-widget-body">
+                <div class="sys-bar" data-sys-bar="42">
+                    <span class="sys-bar-label">cpu</span>
+                    <div class="sys-bar-track"><div class="sys-bar-fill bar-green" style="width:42%"></div></div>
+                    <span class="sys-bar-val">42%</span>
+                </div>
+                <div class="sys-bar" data-sys-bar="58">
+                    <span class="sys-bar-label">mem</span>
+                    <div class="sys-bar-track"><div class="sys-bar-fill bar-green" style="width:58%"></div></div>
+                    <span class="sys-bar-val">58%</span>
+                </div>
+                <div class="sys-bar" data-sys-bar="31">
+                    <span class="sys-bar-label">net</span>
+                    <div class="sys-bar-track"><div class="sys-bar-fill bar-green" style="width:31%"></div></div>
+                    <span class="sys-bar-val">31%</span>
+                </div>
+                <div class="sys-bar" data-sys-bar="24">
+                    <span class="sys-bar-label">disk</span>
+                    <div class="sys-bar-track"><div class="sys-bar-fill bar-green" style="width:24%"></div></div>
+                    <span class="sys-bar-val">24%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Services -->
+        <div class="sys-widget">
+            <div class="sys-widget-header">
+                <span>services</span>
+                <span class="xp-dots"><span class="xp-dot"></span><span class="xp-dot"></span><span class="xp-dot xp-dot-close"></span></span>
+            </div>
+            <div class="sys-widget-body">
+                <div style="font-size:.68rem;line-height:1.8;color:var(--text-gray);">
+                    <div><span style="color:var(--green);">&#9679;</span> PostgreSQL</div>
+                    <div><span style="color:var(--green);">&#9679;</span> Redis</div>
+                    <div><span style="color:var(--green);">&#9679;</span> Celery Worker</div>
+                    <div><span style="color:var(--green);">&#9679;</span> Celery Beat</div>
+                    <div><span style="color:var(--green);">&#9679;</span> SSRF Filter</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Network log -->
+        <div class="sys-widget" style="flex:1;overflow:hidden;">
+            <div class="sys-widget-header">
+                <span>network log</span>
+                <span class="xp-dots"><span class="xp-dot"></span><span class="xp-dot"></span><span class="xp-dot xp-dot-close"></span></span>
+            </div>
+            <div class="sys-widget-body">
+                <div class="sys-log" id="sys-log"></div>
+            </div>
+        </div>
+    </aside>
+</div>
+{% endblock body %}
+
+<script src="{% static 'js/matrix.js' %}"></script>
+</body>
+</html>

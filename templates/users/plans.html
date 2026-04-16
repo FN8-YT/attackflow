@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Plans — AttackFlow{% endblock %}
+
+{% block content %}
+<!-- Terminal header -->
+<div class="terminal" style="margin-bottom:1.4rem;">
+    <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">access</span> <span class="flag">--list-levels</span></div>
+    <div class="output">> Current clearance: <span class="badge badge-{{ user.plan }}">{{ user.get_plan_display }}</span></div>
+    <div class="output">> Available tiers loaded<span class="cursor"></span></div>
+</div>
+
+<!-- Plans grid -->
+<div class="plans-grid">
+    {% for key, cfg in plans.items %}
+    <div class="plan-card {% if key == user.plan %}plan-current{% endif %}">
+        <div class="card-header" style="margin:-1.2rem -1.2rem .8rem; padding:.4rem .8rem;">
+            <span>{{ cfg.label|lower }}.conf</span>
+            {% if key == user.plan %}<span style="color:var(--green-bright);">active</span>{% endif %}
+        </div>
+
+        <div class="plan-header">
+            <h2>{{ cfg.label }}</h2>
+            <div class="plan-price">
+                {% if cfg.price == "0" %}
+                    $0
+                {% elif cfg.price == "—" %}
+                    &mdash;
+                {% else %}
+                    ${{ cfg.price }}<span class="plan-period">/mo</span>
+                {% endif %}
+            </div>
+        </div>
+
+        <ul class="plan-features">
+            <li>{{ cfg.monthly_quota }} scans/month</li>
+            <li>
+                {% if "active" in cfg.scan_modes %}
+                    Passive + Active scanning
+                {% else %}
+                    Passive scanning only
+                {% endif %}
+            </li>
+            <li>
+                {% if cfg.advanced_scanners %}
+                    Advanced scanners (XSS, SQLi, OSINT)
+                {% else %}
+                    <span class="muted">Advanced scanners</span>
+                {% endif %}
+            </li>
+            <li>
+                {% if cfg.pdf_export %}
+                    PDF report export
+                {% else %}
+                    <span class="muted">PDF report export</span>
+                {% endif %}
+            </li>
+        </ul>
+
+        <div class="plan-action">
+            {% if key == user.plan %}
+                <span class="btn btn-ghost btn-sm" style="cursor:default; opacity:.5; width:100%; justify-content:center;">CURRENT</span>
+            {% elif key == "admin" %}
+            {% else %}
+                <span class="btn btn-primary btn-sm" style="opacity:.5; cursor:not-allowed; width:100%; justify-content:center;">COMING SOON</span>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<div class="muted" style="margin-top:.5rem; line-height:1.8;">
+    > Payment gateway activation pending.<br>
+    > Contact admin for manual plan upgrades.
+</div>
+{% endblock %}

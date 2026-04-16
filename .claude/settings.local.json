@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat /Users/santo/Documents/VisualStudioCode/SaaS/requirements/*.txt)",
+      "Bash(python3 -c ':*)",
+      "Bash(docker-compose run:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker-compose ps:*)",
+      "Bash(docker-compose exec web python manage.py shell -c ':*)",
+      "Bash(chmod +x /Users/santo/Documents/VisualStudioCode/SaaS/deploy.sh)",
+      "Bash(chmod +x /Users/santo/Documents/VisualStudioCode/SaaS/build.sh)"
+    ]
+  }
+}

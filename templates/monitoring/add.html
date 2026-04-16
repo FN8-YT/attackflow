@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Add Monitor Target — AttackFlow{% endblock %}
+
+{% block content %}
+<p><a href="{% url 'monitoring:dashboard' %}" class="muted small">&lt; back_to_monitoring</a></p>
+
+<!-- Terminal header -->
+<div class="terminal" style="margin-bottom:1.4rem;">
+    <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">monitor</span> <span class="flag">--add-target</span></div>
+    <div class="output">> Quota: {{ used }}/{{ target_limit }} targets used</div>
+    <div class="output">> Configure URL, interval and start monitoring<span class="cursor"></span></div>
+</div>
+
+<div style="max-width:560px;">
+    <div class="card">
+        <div class="card-header">
+            <span>new_monitor_target</span>
+            <span class="muted small">{{ used }}/{{ target_limit }} used</span>
+        </div>
+
+        <form method="post" novalidate>
+            {% csrf_token %}
+
+            <!-- Non-field errors -->
+            {% if form.non_field_errors %}
+            <div style="color:var(--red);font-size:.72rem;margin-bottom:1rem;padding:.5rem;background:rgba(220,50,50,.08);border-left:2px solid var(--red);">
+                {% for err in form.non_field_errors %}{{ err }}{% endfor %}
+            </div>
+            {% endif %}
+
+            <!-- Name -->
+            <div style="margin-bottom:1rem;">
+                <label style="display:block;font-size:.7rem;color:var(--green);letter-spacing:.08em;margin-bottom:.35rem;">
+                    {{ form.name.label|upper }}
+                </label>
+                {{ form.name }}
+                {% if form.name.errors %}
+                <div style="color:var(--red);font-size:.66rem;margin-top:.2rem;">{{ form.name.errors.0 }}</div>
+                {% endif %}
+                <div style="color:var(--text-gray);font-size:.63rem;margin-top:.2rem;">Un nombre descriptivo para identificar este objetivo.</div>
+            </div>
+
+            <!-- URL -->
+            <div style="margin-bottom:1rem;">
+                <label style="display:block;font-size:.7rem;color:var(--green);letter-spacing:.08em;margin-bottom:.35rem;">
+                    {{ form.url.label|upper }}
+                </label>
+                {{ form.url }}
+                {% if form.url.errors %}
+                <div style="color:var(--red);font-size:.66rem;margin-top:.2rem;">{{ form.url.errors.0 }}</div>
+                {% endif %}
+                <div style="color:var(--text-gray);font-size:.63rem;margin-top:.2rem;">{{ form.url.help_text }}</div>
+            </div>
+
+            <!-- Interval -->
+            <div style="margin-bottom:1.4rem;">
+                <label style="display:block;font-size:.7rem;color:var(--green);letter-spacing:.08em;margin-bottom:.35rem;">
+                    {{ form.check_interval.label|upper }}
+                </label>
+                {{ form.check_interval }}
+                {% if form.check_interval.errors %}
+                <div style="color:var(--red);font-size:.66rem;margin-top:.2rem;">{{ form.check_interval.errors.0 }}</div>
+                {% endif %}
+                <div style="color:var(--text-gray);font-size:.63rem;margin-top:.2rem;">{{ form.check_interval.help_text }}</div>
+            </div>
+
+            <!-- Info box: what gets monitored -->
+            <div style="background:var(--chrome);border:1px solid var(--chrome-border);padding:.7rem .9rem;margin-bottom:1.2rem;font-size:.68rem;line-height:1.9;color:var(--text-gray);">
+                <div style="color:var(--xp-blue);font-size:.65rem;letter-spacing:.08em;margin-bottom:.4rem;font-weight:600;">QUÉ SE MONITORIZA</div>
+                <div>◎ HTTP uptime y código de respuesta</div>
+                <div>◎ Tiempo de respuesta (alerta &gt;3s)</div>
+                <div>◎ 10 cabeceras de seguridad (CSP, HSTS, X-Frame-Options…)</div>
+                <div>◎ Certificado SSL — expiración e issuer</div>
+                <div>◎ Hash del contenido de la página (detecta cambios)</div>
+                <div>◎ Detección automática de cambios entre checks</div>
+            </div>
+
+            <div style="display:flex;gap:.6rem;align-items:center;">
+                <button type="submit" class="btn btn-primary">+ add target</button>
+                <a href="{% url 'monitoring:dashboard' %}" class="btn btn-ghost">cancel</a>
+            </div>
+        </form>
+    </div>
+
+    {% if not request.user.is_premium %}
+    <!-- Upsell -->
+    <div style="margin-top:1rem;padding:.7rem .9rem;background:var(--xp-blue-lo);border:1px solid var(--xp-blue-dim);font-size:.68rem;color:var(--text-gray);">
+        <span style="color:var(--xp-blue);font-weight:600;">FREE plan:</span>
+        1 target · checks cada 15 min mínimo.
+        <a href="{% url 'users:plans' %}" style="color:var(--xp-blue);margin-left:.3rem;">Upgrade to Premium →</a>
+        para 10 targets y checks cada 5 min.
+    </div>
+    {% endif %}
+</div>
+
+<style>
+/* Style form inputs to match the rest of the app */
+#id_name, #id_url, #id_check_interval {
+    width:100%;box-sizing:border-box;
+    background:var(--chrome);
+    border:1px solid var(--chrome-border);
+    color:var(--green-bright);
+    font-family:inherit;font-size:.78rem;
+    padding:.45rem .6rem;
+    outline:none;
+    transition:border-color .2s;
+}
+#id_name:focus, #id_url:focus, #id_check_interval:focus {
+    border-color:var(--xp-blue);
+}
+#id_check_interval option {
+    background:var(--chrome);
+    color:var(--green-bright);
+}
+</style>
+{% endblock %}

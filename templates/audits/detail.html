@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% block title %}Report: {{ audit.target_url }} — AttackFlow{% endblock %}
+
+{% block content %}
+<p><a href="{% url 'users:dashboard' %}" class="muted small">&lt; back_to_dashboard</a></p>
+
+<!-- Terminal header -->
+<div class="terminal" style="margin-bottom:1.4rem;">
+    <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">report</span> <span class="flag">--target</span> <span class="cmd">{{ audit.target_url }}</span></div>
+    <div class="output">> Scan ID: {{ audit.pk }}</div>
+    <div class="output">> Timestamp: {{ audit.created_at|date:"d/m/Y H:i:s" }}{% if audit.duration_seconds %} // Duration: {{ audit.duration_seconds|floatformat:1 }}s{% endif %}</div>
+    {% if audit.scan_mode == 'active' %}
+    <div class="output">> Mode: <span style="color:var(--orange);">ACTIVE</span> (XSS, SQLi, misconfig enabled)</div>
+    {% else %}
+    <div class="output">> Mode: PASSIVE</div>
+    {% endif %}
+    <div class="output">> Status: <span style="color:{% if audit.status == 'completed' %}var(--green-bright){% elif audit.status == 'failed' %}var(--red){% else %}var(--cyan){% endif %};">{{ audit.get_status_display|upper }}</span><span class="cursor"></span></div>
+</div>
+
+{% if audit.status == 'failed' %}
+<!-- Failed scan -->
+<div class="card" style="border-color:rgba(255,51,51,.3);">
+    <div class="card-header">
+        <span style="color:var(--red);">error_log</span>
+        <span>fatal</span>
+    </div>
+    <div class="muted" style="line-height:1.8;">
+        > <span style="color:var(--red);">SCAN FAILED</span><br>
+        > {{ audit.error_message }}
+    </div>
+</div>
+
+{% elif audit.status == 'completed' %}
+
+<!-- Score + stats -->
+<div class="stats" style="margin-bottom:1.4rem;">
+    <div class="stat-card" style="text-align:center; padding:1.5rem;">
+        <div class="score-big score-{{ score_band }}">
+            {{ audit.score }}<span class="score-unit">/100</span>
+        </div>
+        <div class="stat-label" style="margin-top:.5rem;">security score</div>
+        <div style="margin-top:.75rem;">
+            <div class="bar-bg" style="width:80%; margin:0 auto;">
+                <div class="bar-fill" style="width:{{ audit.score }}%;
+                    background:{% if score_band == 'good' %}var(--green-bright){% elif score_band == 'warn' %}var(--amber){% else %}var(--red){% endif %};"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="stat-card">
+        <div class="stat-value">{{ findings|length }}</div>
+        <div class="stat-label">total findings</div>
+    </div>
+
+    <div class="stat-card">
+        {% if can_export_pdf %}
+        <a href="{% url 'reports:export_pdf' audit.pk %}" class="btn btn-primary" style="width:100%; justify-content:center; margin-top:.3rem;">
+            EXPORT PDF
+        </a>
+        {% else %}
+        <a href="{% url 'users:plans' %}" class="btn btn-ghost" style="width:100%; justify-content:center; margin-top:.3rem; opacity:.6;" title="Requires Premium">
+            PDF (PREMIUM)
+        </a>
+        {% endif %}
+        <div class="stat-label" style="margin-top:.5rem;">report</div>
+    </div>
+</div>
+
+<!-- Category breakdown -->
+<div class="card" style="margin-bottom:1rem;">
+    <div class="card-header">
+        <span>category_breakdown</span>
+        <span>{{ breakdown|length }} categories</span>
+    </div>
+    <div class="table-wrap">
+        <table class="breakdown">
+            <thead>
+                <tr>
+                    <th>category</th>
+                    <th>score</th>
+                    <th>critical</th>
+                    <th>high</th>
+                    <th>medium</th>
+                    <th>low</th>
+                    <th>info</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cat, data in breakdown.items %}
+                <tr>
+                    <td style="text-transform:uppercase; letter-spacing:.04em;">{{ cat }}</td>
+                    <td>
+                        <span class="{% if data.score >= 85 %}score-good{% elif data.score >= 60 %}score-warn{% else %}score-bad{% endif %}">
+                            {{ data.score }}
+                        </span>
+                    </td>
+                    <td>{% if data.counts.critical %}<span class="badge badge-critical">{{ data.counts.critical }}</span>{% else %}<span class="muted">0</span>{% endif %}</td>
+                    <td>{% if data.counts.high %}<span class="badge badge-high">{{ data.counts.high }}</span>{% else %}<span class="muted">0</span>{% endif %}</td>
+                    <td>{% if data.counts.medium %}<span class="badge badge-medium">{{ data.counts.medium }}</span>{% else %}<span class="muted">0</span>{% endif %}</td>
+                    <td>{% if data.counts.low %}<span class="badge badge-low">{{ data.counts.low }}</span>{% else %}<span class="muted">0</span>{% endif %}</td>
+                    <td>{% if data.counts.info %}<span class="badge badge-info">{{ data.counts.info }}</span>{% else %}<span class="muted">0</span>{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Findings -->
+<div class="card" id="findings-card">
+    <div class="card-header">
+        <span>findings.log</span>
+        <span>{{ findings|length }} entries</span>
+    </div>
+
+    <!-- Severity filter bar -->
+    <div class="findings-filters" id="findings-filters"></div>
+
+    <!-- Findings list (JS groups these by severity) -->
+    <div id="findings-list">
+    {% for f in findings %}
+    <div class="finding finding-{{ f.severity }}" data-severity="{{ f.severity }}" data-category="{{ f.category }}">
+        <div class="finding-head">
+            <span class="badge badge-{{ f.severity }}">{{ f.severity }}</span>
+            <span class="finding-category">{{ f.get_category_display }}</span>
+        </div>
+        <h3>{{ f.title }}</h3>
+        <p>{{ f.description }}</p>
+        {% if f.recommendation %}
+            <div class="finding-rec">{{ f.recommendation }}</div>
+        {% endif %}
+        {% if f.evidence %}
+        <details>
+            <summary>View Evidence</summary>
+            <pre>{{ f.evidence }}</pre>
+        </details>
+        {% endif %}
+        {% if f.reference_url %}
+            <p style="margin-top:.4rem;">
+                <a href="{{ f.reference_url }}" target="_blank" rel="noopener noreferrer"
+                   class="btn btn-ghost btn-sm" style="color:var(--xp-blue);border-color:var(--chrome-border);">
+                    external_ref &gt;
+                </a>
+            </p>
+        {% endif %}
+    </div>
+    {% empty %}
+    <div style="padding:.8rem 0;">
+        <span class="score-good" style="font-size:.86rem;">> No security findings detected. All checks passed.</span>
+    </div>
+    {% endfor %}
+    </div>
+</div>
+
+<!-- Findings enhancement JS: severity grouping + filter bar -->
+<script>
+(function(){
+    var list = document.getElementById('findings-list');
+    var filtersEl = document.getElementById('findings-filters');
+    if (!list || !filtersEl) return;
+
+    var findings = Array.from(list.querySelectorAll('.finding[data-severity]'));
+    if (!findings.length) return;
+
+    // Severity order (most critical first).
+    var SEV_ORDER = ['critical','high','medium','low','info'];
+    var SEV_LABELS = {critical:'Critical',high:'High',medium:'Medium',low:'Low',info:'Info'};
+
+    // Count findings per severity.
+    var counts = {};
+    SEV_ORDER.forEach(function(s){ counts[s] = 0; });
+    findings.forEach(function(f){ counts[f.dataset.severity] = (counts[f.dataset.severity]||0) + 1; });
+
+    // Build filter buttons.
+    var allBtn = document.createElement('button');
+    allBtn.className = 'findings-filter-btn active';
+    allBtn.type = 'button';
+    allBtn.innerHTML = 'All <span class="filter-count">' + findings.length + '</span>';
+    allBtn.dataset.filter = 'all';
+    filtersEl.appendChild(allBtn);
+
+    SEV_ORDER.forEach(function(sev){
+        if (!counts[sev]) return;
+        var btn = document.createElement('button');
+        btn.className = 'findings-filter-btn';
+        btn.type = 'button';
+        btn.dataset.filter = sev;
+        btn.innerHTML = SEV_LABELS[sev] + ' <span class="filter-count">' + counts[sev] + '</span>';
+        filtersEl.appendChild(btn);
+    });
+
+    // Group findings by severity: detach, sort, re-insert with group headers.
+    var fragment = document.createDocumentFragment();
+    SEV_ORDER.forEach(function(sev){
+        var group = findings.filter(function(f){ return f.dataset.severity === sev; });
+        if (!group.length) return;
+
+        var header = document.createElement('div');
+        header.className = 'severity-group-header';
+        header.dataset.severity = sev;
+        header.innerHTML = '<span class="badge badge-' + sev + '">' + sev + '</span> ' +
+            '<span style="color:var(--text-gray)">' + group.length + ' finding' + (group.length>1?'s':'') + '</span>' +
+            '<span class="sev-toggle">&#9660;</span>';
+        fragment.appendChild(header);
+
+        var body = document.createElement('div');
+        body.className = 'severity-group-body';
+        body.dataset.severity = sev;
+        group.forEach(function(f){ body.appendChild(f); });
+        fragment.appendChild(body);
+    });
+    list.innerHTML = '';
+    list.appendChild(fragment);
+
+    // Toggle collapse on group headers.
+    list.addEventListener('click', function(e){
+        var header = e.target.closest('.severity-group-header');
+        if (!header) return;
+        var sev = header.dataset.severity;
+        var body = list.querySelector('.severity-group-body[data-severity="'+sev+'"]');
+        if (!body) return;
+        header.classList.toggle('collapsed');
+        body.classList.toggle('collapsed');
+    });
+
+    // Filter buttons.
+    filtersEl.addEventListener('click', function(e){
+        var btn = e.target.closest('.findings-filter-btn');
+        if (!btn) return;
+        filtersEl.querySelectorAll('.findings-filter-btn').forEach(function(b){ b.classList.remove('active'); });
+        btn.classList.add('active');
+        var filter = btn.dataset.filter;
+
+        list.querySelectorAll('.severity-group-header, .severity-group-body').forEach(function(el){
+            if (filter === 'all') {
+                el.style.display = '';
+                el.classList.remove('collapsed');
+            } else {
+                el.style.display = el.dataset.severity === filter ? '' : 'none';
+                el.classList.remove('collapsed');
+            }
+        });
+    });
+})();
+</script>
+
+{% else %}
+<!-- Pending/running -->
+<div class="card">
+    <div class="card-header">
+        <span>status</span>
+    </div>
+    <p class="muted">> Status: <span class="badge badge-{{ audit.status }}">{{ audit.get_status_display }}</span></p>
+</div>
+{% endif %}
+{% endblock %}

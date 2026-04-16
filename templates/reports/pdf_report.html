@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Informe — {{ audit.target_url }}</title>
+    <style>
+        /* PDF-optimized: fondo blanco, colores de impresión */
+        :root {
+            --text: #1a1a2e;
+            --dim: #64748b;
+            --border: #e2e8f0;
+            --ok: #16a34a;
+            --warn: #d97706;
+            --danger: #dc2626;
+            --accent: #2563eb;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Liberation Sans', Arial, Helvetica, sans-serif;
+            color: var(--text);
+            font-size: 10pt;
+            line-height: 1.5;
+            padding: 0;
+        }
+        h1 { font-size: 18pt; margin-bottom: 4pt; }
+        h2 { font-size: 13pt; margin: 16pt 0 6pt; border-bottom: 1px solid var(--border); padding-bottom: 4pt; }
+        h3 { font-size: 11pt; margin-bottom: 2pt; }
+        p { margin-bottom: 6pt; }
+        .meta { color: var(--dim); font-size: 9pt; }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            border-bottom: 2px solid var(--accent);
+            padding-bottom: 12pt;
+            margin-bottom: 16pt;
+        }
+        .brand { font-size: 14pt; font-weight: 700; color: var(--accent); }
+
+        /* Score */
+        .score-box {
+            text-align: center;
+            padding: 14pt;
+            border: 2px solid var(--border);
+            border-radius: 6pt;
+            margin-bottom: 16pt;
+        }
+        .score-value { font-size: 36pt; font-weight: 800; }
+        .score-good { color: var(--ok); }
+        .score-warn { color: var(--warn); }
+        .score-bad  { color: var(--danger); }
+
+        /* Breakdown table */
+        table { width: 100%; border-collapse: collapse; margin-bottom: 12pt; }
+        th {
+            text-align: left;
+            font-size: 8pt;
+            text-transform: uppercase;
+            letter-spacing: 0.5pt;
+            color: var(--dim);
+            padding: 5pt 6pt;
+            border-bottom: 1px solid var(--border);
+        }
+        td {
+            padding: 5pt 6pt;
+            border-bottom: 1px solid #f1f5f9;
+            font-size: 9pt;
+        }
+        .text-center { text-align: center; }
+
+        /* Severity badges */
+        .badge {
+            display: inline-block;
+            padding: 1pt 6pt;
+            border-radius: 3pt;
+            font-size: 7pt;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        .badge-critical { background: #fef2f2; color: var(--danger); }
+        .badge-high     { background: #fff7ed; color: #ea580c; }
+        .badge-medium   { background: #fffbeb; color: var(--warn); }
+        .badge-low      { background: #eff6ff; color: var(--accent); }
+        .badge-info     { background: #f8fafc; color: var(--dim); }
+
+        /* Finding cards */
+        .finding {
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--border);
+            border-radius: 4pt;
+            padding: 8pt 10pt;
+            margin-bottom: 8pt;
+            page-break-inside: avoid;
+        }
+        .finding-critical { border-left-color: var(--danger); }
+        .finding-high     { border-left-color: #ea580c; }
+        .finding-medium   { border-left-color: var(--warn); }
+        .finding-low      { border-left-color: var(--accent); }
+
+        .finding-head { margin-bottom: 4pt; }
+        .finding p { color: var(--dim); font-size: 9pt; }
+        .finding-rec { font-size: 9pt; color: var(--dim); margin-top: 4pt; }
+        .evidence {
+            background: #f8fafc;
+            padding: 6pt;
+            border-radius: 3pt;
+            font-family: monospace;
+            font-size: 8pt;
+            color: var(--dim);
+            margin-top: 4pt;
+            word-break: break-all;
+        }
+
+        /* Footer */
+        .footer {
+            margin-top: 20pt;
+            padding-top: 8pt;
+            border-top: 1px solid var(--border);
+            font-size: 8pt;
+            color: var(--dim);
+            text-align: center;
+        }
+
+        @page {
+            size: A4;
+            margin: 1.5cm;
+        }
+    </style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+    <div>
+        <div class="brand">SecurityAudit</div>
+        <div class="meta">Informe de auditoría de seguridad</div>
+    </div>
+    <div style="text-align:right;">
+        <div class="meta">{{ audit.created_at|date:"d/m/Y H:i" }}</div>
+        <div class="meta">{{ audit.target_url }}</div>
+        {% if audit.duration_seconds %}<div class="meta">Duración: {{ audit.duration_seconds|floatformat:1 }}s</div>{% endif %}
+    </div>
+</div>
+
+<!-- Score -->
+{% if audit.status == 'completed' %}
+<div class="score-box">
+    <div class="score-value {% if score_band == 'good' %}score-good{% elif score_band == 'warn' %}score-warn{% else %}score-bad{% endif %}">
+        {{ audit.score }}<span style="font-size:14pt; color:var(--dim);">/100</span>
+    </div>
+    <div class="meta" style="margin-top:4pt;">Score global de seguridad</div>
+</div>
+
+<!-- Breakdown -->
+<h2>Desglose por categoría</h2>
+<table>
+    <thead>
+        <tr>
+            <th>Categoría</th>
+            <th class="text-center">Score</th>
+            <th class="text-center">Critical</th>
+            <th class="text-center">High</th>
+            <th class="text-center">Medium</th>
+            <th class="text-center">Low</th>
+            <th class="text-center">Info</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for cat, data in breakdown.items %}
+        <tr>
+            <td style="text-transform:capitalize;">{{ cat }}</td>
+            <td class="text-center">
+                <span class="{% if data.score >= 85 %}score-good{% elif data.score >= 60 %}score-warn{% else %}score-bad{% endif %}">
+                    {{ data.score }}
+                </span>
+            </td>
+            <td class="text-center">{% if data.counts.critical %}<span class="badge badge-critical">{{ data.counts.critical }}</span>{% else %}-{% endif %}</td>
+            <td class="text-center">{% if data.counts.high %}<span class="badge badge-high">{{ data.counts.high }}</span>{% else %}-{% endif %}</td>
+            <td class="text-center">{% if data.counts.medium %}<span class="badge badge-medium">{{ data.counts.medium }}</span>{% else %}-{% endif %}</td>
+            <td class="text-center">{% if data.counts.low %}<span class="badge badge-low">{{ data.counts.low }}</span>{% else %}-{% endif %}</td>
+            <td class="text-center">{% if data.counts.info %}<span class="badge badge-info">{{ data.counts.info }}</span>{% else %}-{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<!-- Findings -->
+<h2>Hallazgos ({{ findings|length }})</h2>
+{% for f in findings %}
+<div class="finding finding-{{ f.severity }}">
+    <div class="finding-head">
+        <span class="badge badge-{{ f.severity }}">{{ f.severity }}</span>
+        <span class="meta" style="margin-left:6pt;">{{ f.get_category_display }}</span>
+    </div>
+    <h3>{{ f.title }}</h3>
+    <p>{{ f.description }}</p>
+    {% if f.recommendation %}
+        <div class="finding-rec"><strong>Recomendación:</strong> {{ f.recommendation }}</div>
+    {% endif %}
+    {% if f.evidence %}
+    <div class="evidence">{{ f.evidence }}</div>
+    {% endif %}
+</div>
+{% empty %}
+<p class="score-good" style="font-size:11pt;">Sin hallazgos de seguridad.</p>
+{% endfor %}
+
+{% elif audit.status == 'failed' %}
+<h2 style="color:var(--danger);">Auditoría fallida</h2>
+<p>{{ audit.error_message }}</p>
+{% endif %}
+
+<!-- Footer -->
+<div class="footer">
+    Generado por SecurityAudit &mdash; {{ audit.created_at|date:"d/m/Y H:i" }}
+</div>
+
+</body>
+</html>

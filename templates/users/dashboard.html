@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — AttackFlow{% endblock %}
+
+{% block content %}
+<!-- Terminal header -->
+<div class="terminal" style="margin-bottom:1.4rem;">
+    <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">status</span> <span class="flag">--operator</span> <span class="cmd">{{ user.email }}</span></div>
+    <div class="output">> Session active. Clearance: <span style="color:var(--green-bright);">{{ user.get_plan_display|upper }}</span></div>
+    <div class="output">> Quota remaining: {{ remaining }} scans this cycle<span class="cursor"></span></div>
+</div>
+
+<!-- Stats -->
+<div class="stats">
+    <div class="stat-card">
+        <div class="stat-value">{{ total_audits }}</div>
+        <div class="stat-label">total scans</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ total_completed }}</div>
+        <div class="stat-label">completed</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value {% if avg_score >= 85 %}score-good{% elif avg_score >= 60 %}score-warn{% else %}score-bad{% endif %}">
+            {% if avg_score %}{{ avg_score }}{% else %}&mdash;{% endif %}
+        </div>
+        <div class="stat-label">avg score</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ remaining }}</div>
+        <div class="stat-label">quota left</div>
+    </div>
+</div>
+
+<!-- Action -->
+<div style="margin-bottom:1rem;">
+    <a href="{% url 'audits:create' %}" class="btn btn-primary">INIT NEW SCAN</a>
+</div>
+
+<!-- Scan history -->
+<div class="card">
+    <div class="card-header">
+        <span>scan_history.log</span>
+        <span>{{ audits|length }} records</span>
+    </div>
+    {% if audits %}
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>target</th>
+                    <th>status</th>
+                    <th>score</th>
+                    <th>timestamp</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for a in audits %}
+                <tr>
+                    <td class="td-url">{{ a.target_url }}</td>
+                    <td><span class="badge badge-{{ a.status }}">{{ a.get_status_display }}</span></td>
+                    <td>
+                        {% if a.score is not None %}
+                            <span class="{% if a.score >= 85 %}score-good{% elif a.score >= 60 %}score-warn{% else %}score-bad{% endif %}">
+                                {{ a.score }}
+                            </span>
+                        {% else %}
+                            <span class="muted">&mdash;</span>
+                        {% endif %}
+                    </td>
+                    <td class="muted small">{{ a.created_at|date:"d/m/Y H:i" }}</td>
+                    <td><a href="{% url 'audits:detail' a.pk %}" class="btn btn-ghost btn-sm">view</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div style="padding:.8rem 0;">
+        <div class="muted" style="line-height:1.8;">
+            > No scan records found.<br>
+            > Execute <a href="{% url 'audits:create' %}">first scan</a> to populate this log.
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

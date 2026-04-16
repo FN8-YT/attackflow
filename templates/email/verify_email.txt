@@ -1,0 +1,22 @@
+AttackFlow — Verificación de cuenta
+====================================
+
+Hola,
+
+Gracias por registrarte en AttackFlow.
+
+Para activar tu cuenta y acceder a la plataforma, confirma tu dirección
+de email haciendo clic en el siguiente enlace:
+
+  {{ verify_url }}
+
+Este enlace es válido durante {{ valid_hours }} horas.
+
+Si no solicitaste esta cuenta, puedes ignorar este mensaje con total
+seguridad. Nadie podrá acceder sin confirmar el email.
+
+---
+Seguridad: este enlace contiene un token HMAC firmado con fecha.
+No compartas este email con nadie.
+
+© AttackFlow Security Platform

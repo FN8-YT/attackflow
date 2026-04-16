@@ -1,0 +1,7 @@
+-r base.txt
+
+# Sirve archivos estáticos directamente desde Gunicorn (sin Nginx en Render)
+whitenoise[brotli]>=6.7
+
+# Observabilidad y errores en producción
+sentry-sdk[django]>=2.7

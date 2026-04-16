@@ -1,0 +1,133 @@
+# =========================================================
+# docker-compose para desarrollo.
+# Levanta: Django (web), Postgres (db), Redis y Celery worker.
+# Para producción se usaría un compose distinto o k8s/ECS,
+# con gunicorn + nginx por delante y sin montar el código.
+# =========================================================
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    # No exponemos el puerto al host por defecto (menor superficie).
+    # Descoméntalo si necesitas conectarte con un cliente externo.
+    # ports:
+    #   - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Mailpit: servidor SMTP local para desarrollo.
+  # Captura TODOS los emails enviados y los muestra en una interfaz web.
+  # Accede a http://localhost:8025 para ver los emails recibidos.
+  # Los emails NO se envían a internet — solo se quedan aquí.
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - "8025:8025"   # interfaz web
+      - "1025:1025"   # puerto SMTP (Django le envía aquí)
+
+  # Servicio efímero: ejecuta migraciones y termina.
+  # Es el mismo patrón que un initContainer/Job de Kubernetes:
+  # si las migraciones fallan, el servicio web no arranca. Si tienen
+  # éxito, exit 0 y los demás servicios proceden.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        REQUIREMENTS: requirements/dev.txt
+    command: python manage.py migrate --noinput
+    env_file: .env
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        REQUIREMENTS: requirements/dev.txt
+    command: python manage.py runserver 0.0.0.0:8000
+    env_file: .env
+    volumes:
+      - .:/app                    # Hot-reload del código en dev
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        REQUIREMENTS: requirements/dev.txt
+    # watchmedo vigila cambios en .py y reinicia el worker automáticamente.
+    # --pool=solo usa un solo hilo (simple para dev, evita problemas de fork).
+    # En producción se usa prefork (el default) sin watchmedo.
+    command: watchmedo auto-restart -d /app -p '*.py' -R -- celery -A config worker --pool=solo --loglevel=info
+    env_file: .env
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Celery Beat: despacha la tarea periódica de monitoring cada 60s.
+  # Solo una instancia debe correr. En producción usar django-celery-beat
+  # con --scheduler django_celery_beat.schedulers:DatabaseScheduler para HA.
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        REQUIREMENTS: requirements/dev.txt
+    command: watchmedo auto-restart -d /app -p '*.py' -R -- celery -A config beat --loglevel=info --scheduler celery.beat:PersistentScheduler
+    env_file: .env
+    volumes:
+      - .:/app
+      - celerybeat_data:/app/celerybeat  # schedule file persistente
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
+  celerybeat_data:

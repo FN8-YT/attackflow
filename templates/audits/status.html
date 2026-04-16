@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Scan in progress — AttackFlow{% endblock %}
+
+{% block content %}
+<!-- Terminal: scan execution log -->
+<div class="terminal" style="margin-bottom:1.4rem;">
+    <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">scan</span> <span class="flag">--execute</span> <span class="cmd">{{ audit.target_url }}</span></div>
+    <div class="output">> Target locked: <span style="color:var(--green-bright);">{{ audit.target_url }}</span></div>
+    <div class="output">> Scan engine initialized. Running modules...</div>
+    <div class="output">&nbsp;</div>
+
+    <!-- Animated scan phases -->
+    <div id="phase-init" style="color:var(--green);">[<span style="color:var(--green-bright);">*</span>] Initializing scan engine...</div>
+    <div id="phase-dns" class="output" style="opacity:.3;">[<span>-</span>] DNS resolution &amp; validation</div>
+    <div id="phase-tls" class="output" style="opacity:.3;">[<span>-</span>] TLS/SSL certificate analysis</div>
+    <div id="phase-headers" class="output" style="opacity:.3;">[<span>-</span>] HTTP security headers check</div>
+    <div id="phase-vulns" class="output" style="opacity:.3;">[<span>-</span>] Vulnerability detection modules</div>
+    <div id="phase-ports" class="output" style="opacity:.3;">[<span>-</span>] Port scanning (nmap -sT)</div>
+
+    <div class="output" style="margin-top:.6rem;">
+        > <span id="status-text" style="color:var(--cyan);">STATUS: {{ audit.get_status_display|upper }}</span>
+    </div>
+    <div class="output">> Estimated time: 20-60s<span class="cursor"></span></div>
+</div>
+
+<!-- Progress indicator -->
+<div class="card">
+    <div class="card-header">
+        <span>scan_progress</span>
+        <span id="progress-label">running</span>
+    </div>
+    <div style="padding:.4rem 0;">
+        <div class="bar-bg">
+            <div class="bar-fill" id="progress-bar" style="width:5%; background:var(--green);"></div>
+        </div>
+    </div>
+    <div class="muted" style="margin-top:.6rem; font-size:.82rem; line-height:1.8;">
+        > Running DNS, TLS, headers, vulnerability and port analysis.<br>
+        > Do not close this window. Auto-redirect on completion.
+    </div>
+</div>
+
+<script>
+    (function() {
+        var STATUS_URL = "{% url 'audits:status_api' audit.pk %}";
+        var DETAIL_URL = "{% url 'audits:detail' audit.pk %}";
+        var statusEl   = document.getElementById("status-text");
+        var progressBar = document.getElementById("progress-bar");
+        var progressLabel = document.getElementById("progress-label");
+
+        var phases = ['phase-dns','phase-tls','phase-headers','phase-vulns','phase-ports'];
+        var phaseIdx = 0;
+        var progress = 5;
+        var phaseTimer = setInterval(function() {
+            if (phaseIdx < phases.length) {
+                var el = document.getElementById(phases[phaseIdx]);
+                if (el) {
+                    el.style.opacity = '1';
+                    el.style.color = 'var(--green)';
+                    el.innerHTML = '[<span style="color:var(--green-bright);">*</span>]' + el.innerHTML.split(']')[1];
+                }
+                progress = Math.min(85, progress + 15);
+                progressBar.style.width = progress + '%';
+                phaseIdx++;
+            } else {
+                clearInterval(phaseTimer);
+            }
+        }, 3500);
+
+        function poll() {
+            fetch(STATUS_URL, { credentials: "same-origin" })
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    statusEl.textContent = "STATUS: " + d.status.toUpperCase();
+                    if (d.status === "completed" || d.status === "failed") {
+                        clearInterval(phaseTimer);
+                        progressBar.style.width = '100%';
+                        if (d.status === "completed") {
+                            progressBar.style.background = 'var(--green-bright)';
+                            progressBar.style.boxShadow = 'var(--glow-strong)';
+                            progressLabel.textContent = 'complete';
+                        } else {
+                            progressBar.style.background = 'var(--red)';
+                            progressLabel.textContent = 'failed';
+                        }
+                        setTimeout(function() {
+                            window.location.href = DETAIL_URL;
+                        }, 800);
+                    } else {
+                        setTimeout(poll, 3000);
+                    }
+                })
+                .catch(function() { setTimeout(poll, 6000); });
+        }
+        setTimeout(poll, 1500);
+    })();
+</script>
+{% endblock %}
