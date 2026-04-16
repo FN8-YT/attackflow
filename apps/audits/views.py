@@ -56,10 +56,17 @@ def create_audit(request: HttpRequest) -> HttpResponse:
             audit.status = AuditStatus.PENDING
             audit.save()
 
-            # Despachar al worker Celery (no bloqueante).
-            run_audit_task.delay(audit.pk)
+            # Intentar despachar al worker Celery.
+            # Si no hay broker disponible (free tier sin worker),
+            # ejecutar síncronamente en el proceso web.
+            try:
+                run_audit_task.delay(audit.pk)
+                messages.info(request, "Auditoría en cola. Los resultados aparecerán en breve.")
+            except Exception:
+                # Sin broker: ejecutar aquí mismo (puede tardar ~30–60 s).
+                messages.info(request, "Ejecutando auditoría (puede tardar hasta 60 s)…")
+                run_audit_task(audit.pk)
 
-            messages.info(request, "Auditoría en cola. Te avisamos cuando termine.")
             return redirect("audits:status", pk=audit.pk)
     else:
         form = AuditForm(user=request.user)

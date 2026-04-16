@@ -157,12 +157,22 @@ def monitor_toggle(request: HttpRequest, pk: int) -> HttpResponse:
 @login_required
 @require_POST
 def monitor_run_now(request: HttpRequest, pk: int) -> HttpResponse:
-    """Despacha un check inmediato para el target."""
+    """Ejecuta un check inmediato y síncrono para el target.
+
+    Se ejecuta directamente en el proceso web (sin Celery) porque:
+    - El check es rápido (<10 s de timeout).
+    - En el plan free de Render no hay worker disponible.
+    - El usuario espera feedback inmediato.
+    """
     target = get_object_or_404(MonitorTarget, pk=pk, user=request.user)
 
-    from apps.monitoring.tasks import run_single_monitoring_check
-    run_single_monitoring_check.delay(target.pk)
-    messages.success(request, f"Check iniciado para «{target.name}». Los resultados aparecerán en unos segundos.")
+    try:
+        from apps.monitoring.services import run_check
+        run_check(target)
+        messages.success(request, f"Check completado para «{target.name}».")
+    except Exception as exc:
+        messages.error(request, f"El check falló: {exc}")
+
     return redirect("monitoring:detail", pk=pk)
 
 

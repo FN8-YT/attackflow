@@ -22,16 +22,19 @@ if cleared:
 # Crea superusuario si no existe
 email = 'santiagopenarandamejia82@gmail.com'
 if not User.objects.filter(email=email).exists():
-    User.objects.create_superuser(email=email, password='santo')
-    print(f'  Superuser created: {email}')
+    u = User.objects.create_superuser(email=email, password='santo')
+    u.plan = 'admin'
+    u.save(update_fields=['plan'])
+    print(f'  Superuser created: {email} (plan=admin)')
 else:
     u = User.objects.get(email=email)
     u.is_superuser = True
     u.is_staff = True
     u.is_verified = True
+    u.plan = 'admin'
     u.set_password('santo')
     u.save()
-    print(f'  Superuser updated: {email}')
+    print(f'  Superuser updated: {email} (plan=admin)')
 "
 
 echo "=== Starting Gunicorn ==="
