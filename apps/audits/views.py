@@ -162,6 +162,18 @@ def create_audit(request: HttpRequest) -> HttpResponse:
         )
     except Exception as e:
         logger.exception("create_audit error: %s", e)
+        # Solo admins ven el traceback. Esto es TEMPORAL: mientras
+        # debuggeamos el 500 en producción (sin acceso directo a logs
+        # de Render), devolvemos el traceback como text/plain al staff.
+        if request.user.is_authenticated and request.user.is_staff:
+            import traceback as _tb
+            return HttpResponse(
+                "=== create_audit crashed ===\n"
+                f"Exception: {type(e).__name__}: {e}\n\n"
+                + _tb.format_exc(),
+                content_type="text/plain; charset=utf-8",
+                status=500,
+            )
         raise
 
 
