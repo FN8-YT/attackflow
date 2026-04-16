@@ -13,7 +13,6 @@ services:
     dockerContext: .
     dockerfilePath: ./Dockerfile
     preDeployCommand: "python manage.py migrate --noinput && python manage.py collectstatic --noinput --clear"
-    startCommand: "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 60 --access-logfile - --error-logfile -"
     envVars:
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.prod
@@ -68,8 +67,7 @@ services:
     plan: starter
     region: frankfurt
     dockerContext: .
-    dockerfilePath: ./Dockerfile
-    startCommand: "celery -A config worker --beat --loglevel=info --concurrency=2 --scheduler celery.beat:PersistentScheduler"
+    dockerfilePath: ./Dockerfile.worker
     envVars:
       - key: DJANGO_SETTINGS_MODULE
         value: config.settings.prod
