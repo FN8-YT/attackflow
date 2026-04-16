@@ -60,14 +60,11 @@ class EmailAuthenticationForm(AuthenticationForm):
         Hook de AuthenticationForm: lanza ValidationError si el usuario
         no debe poder iniciar sesión.
         Llamado DESPUÉS de validar credenciales, ANTES de crear la sesión.
-        """
-        super().confirm_login_allowed(user)  # comprueba is_active
 
-        if not getattr(user, "is_verified", True):
-            raise ValidationError(
-                _(
-                    "Tu cuenta no está verificada. "
-                    "Revisa tu email o solicita un nuevo enlace."
-                ),
-                code="email_not_verified",
-            )
+        IMPORTANTE: NO bloqueamos aquí a usuarios no verificados.
+        Si lo hiciéramos, django-axes contaría cada intento como fallo
+        de contraseña y los bloquearía por fuerza bruta incorrectamente.
+        El EmailVerificationMiddleware ya intercepta la request post-login
+        y redirige a verify_pending — es la capa correcta para este control.
+        """
+        super().confirm_login_allowed(user)  # solo comprueba is_active

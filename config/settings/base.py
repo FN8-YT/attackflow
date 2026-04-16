@@ -263,10 +263,10 @@ REST_FRAMEWORK = {
 # ---------------------------------------------------------------------------
 # django-axes (brute force)
 # ---------------------------------------------------------------------------
-AXES_FAILURE_LIMIT = 5
-AXES_COOLOFF_TIME = 1  # horas
+AXES_FAILURE_LIMIT = 10          # intentos fallidos antes de bloquear
+AXES_COOLOFF_TIME = 1            # horas que dura el bloqueo
 AXES_LOCKOUT_PARAMETERS = ["ip_address", "username"]
-AXES_RESET_ON_SUCCESS = True
+AXES_RESET_ON_SUCCESS = True     # limpia el contador al loguearse bien
 
 # ---------------------------------------------------------------------------
 # Logging
