@@ -1,0 +1,26 @@
+AttackFlow — Alerta de Monitoring
+==================================
+
+Hola{{ user.first_name|default:""|stringformat:" %s" }},
+
+Se han detectado cambios importantes en uno de tus targets monitorizados.
+
+Target:  {{ target.name }}
+URL:     {{ target.url }}
+Estado:  {{ target.get_current_status_display }}
+
+Cambios detectados:
+-------------------
+{% for change in changes %}
+[{{ change.severity|upper }}] {{ change.description }}{% if change.old_value and change.new_value %}
+  Antes: {{ change.old_value }}
+  Ahora: {{ change.new_value }}{% endif %}
+{% endfor %}
+
+---
+Puedes ver el historial completo de este target en tu panel de AttackFlow.
+
+Si no quieres recibir estas alertas, puedes desactivar el target desde
+el panel de Monitoring.
+
+© AttackFlow Security Platform

@@ -4,6 +4,9 @@ Monitoring Service — lógica de comprobación y detección de cambios.
 Diseño:
 - run_check(target): ejecuta una comprobación y devuelve MonitorCheck.
 - _detect_changes(target, old, new): compara dos checks y crea MonitorChange.
+- _send_alert_email(target, changes): envía email al usuario para cambios
+  CRITICAL/HIGH. Lógica anti-spam: STATUS_DOWN solo genera 1 email por
+  incidente (no repite mientras siga caído).
 - Lightweight: sin scanner completo. Solo HTTP uptime, headers, SSL, content hash.
 - Anti-SSRF: reusa resolve_and_validate de audits.
 
@@ -330,8 +333,72 @@ def _detect_changes(target, prev: "MonitorCheck", curr: "MonitorCheck") -> None:
         ))
 
     # Persist.
+    created_changes = []
     for c in changes:
-        MonitorChange.objects.create(target=target, monitor_check=curr, **c)
+        created_changes.append(
+            MonitorChange.objects.create(target=target, monitor_check=curr, **c)
+        )
+
+    # Alertas por email para cambios importantes.
+    if created_changes:
+        try:
+            _send_alert_email(target, created_changes)
+        except Exception as exc:
+            logger.warning("No se pudo enviar alerta email para target %s: %s", target.pk, exc)
+
+
+def _send_alert_email(target, changes: list) -> None:
+    """
+    Envía email al usuario para cambios CRITICAL/HIGH.
+
+    Anti-spam:
+    - Solo procesa cambios CRITICAL o HIGH.
+    - Para STATUS_DOWN: solo envía email si el target NO estaba ya caído
+      antes de este check (evita spam mientras sigue offline).
+    - Los demás cambios críticos (SSL expiry, headers) siempre notifican.
+    """
+    from django.core.mail import send_mail
+    from django.template.loader import render_to_string
+
+    ALERT_SEVERITIES = {"critical", "high"}
+
+    # Filtrar solo cambios importantes.
+    alertable = [c for c in changes if c.severity in ALERT_SEVERITIES]
+    if not alertable:
+        return
+
+    # Anti-spam para STATUS_DOWN: si consecutive_failures > 1, ya enviamos
+    # alerta cuando se produjo el primer fallo. No repetir.
+    # (consecutive_failures aún no se actualizó; se actualiza en _update_target_status
+    #  que se llama después. Por eso usamos el valor actual del target.)
+    has_down = any(c.change_type == "status_down" for c in alertable)
+    if has_down and target.consecutive_failures > 0:
+        # Ya estaba caído antes: filtrar STATUS_DOWN del lote actual.
+        alertable = [c for c in alertable if c.change_type != "status_down"]
+        if not alertable:
+            return
+
+    user = target.user
+    context = {
+        "user": user,
+        "target": target,
+        "changes": alertable,
+    }
+
+    subject = render_to_string("email/monitor_alert_subject.txt", context).strip()
+    body_txt = render_to_string("email/monitor_alert.txt", context)
+
+    send_mail(
+        subject=subject,
+        message=body_txt,
+        from_email=None,   # DEFAULT_FROM_EMAIL de settings
+        recipient_list=[user.email],
+        fail_silently=False,
+    )
+    logger.info(
+        "Monitor alert email sent to %s for target '%s' (%d change(s))",
+        user.email, target.name, len(alertable),
+    )
 
 
 def _update_target_status(target, check: "MonitorCheck") -> None:
