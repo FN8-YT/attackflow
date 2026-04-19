@@ -22,11 +22,15 @@ db.sqlite3-journal
 media/
 staticfiles/
 
-# Entorno
+# Entorno — nunca subir secretos
 .env
 .env.*
 !.env.example
-!.env.prod.example
+
+# Celery Beat — archivos de runtime generados en local
+celerybeat-schedule
+celerybeat-schedule.db
+celerybeat/
 
 # IDE
 .vscode/

@@ -1,33 +1,22 @@
 """
 Vistas de auditorías.
 
-Fase 4: la ejecución es asíncrona. La vista crea el Audit, despacha
-la task de Celery, y redirige a una página de estado que hace polling.
-Cuando el worker termina, el polling detecta el cambio y redirige
-al informe.
+La ejecución es asíncrona: la vista crea el Audit, encola la task
+en Celery vía `.delay()`, y redirige a la página de estado.
+El worker procesa el scan en background. El polling JS en /status/
+detecta el cambio de estado y redirige al informe.
 
 Tres preocupaciones transversales:
 1. Rate limiting por usuario con django-ratelimit.
-2. Cuota mensual (depende del plan).
+2. Cuota mensual (depende del plan del usuario).
 3. Ownership: un usuario nunca puede ver auditorías de otro.
-
-Modo degradado (Render free tier, sin worker):
-- Si `CELERY_TASK_ALWAYS_EAGER=True`, la task normalmente se ejecutaría
-  síncrona en el mismo proceso que hace el POST. Eso bloquea el request
-  HTTP minutos y gunicorn lo mata por timeout (500).
-- En su lugar lanzamos la task en un thread daemon y devolvemos el
-  redirect a /status/ inmediatamente. El polling del status page
-  detecta la finalización igual que lo haría con un worker real.
 """
 from __future__ import annotations
 
 import logging
-import threading
 
-from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.db import close_old_connections
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -44,162 +33,103 @@ from .tasks import run_audit_task
 logger = logging.getLogger(__name__)
 
 
-def _dispatch_audit(audit_id: int) -> None:
-    """
-    Despacha la ejecución de un audit.
-
-    - Si hay broker Celery real (no EAGER): encola la task vía `.delay()`.
-    - Si estamos en EAGER (free tier sin worker): ejecuta `run_audit` en
-      un thread daemon para no bloquear el request HTTP. El thread cierra
-      las conexiones de DB al terminar (Django abre una por thread).
-    """
-    if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
-        def _worker():
-            try:
-                from .models import Audit as _Audit
-                from .services import run_audit
-                audit_obj = _Audit.objects.get(pk=audit_id)
-                run_audit(audit_obj)
-            except Exception:
-                logger.exception("Thread audit %s crashed", audit_id)
-            finally:
-                # Cada thread en Django tiene su propia conexión a DB.
-                # Si no la cerramos, el pool se queda con conexiones zombis.
-                close_old_connections()
-
-        t = threading.Thread(
-            target=_worker,
-            name=f"audit-{audit_id}",
-            daemon=True,
-        )
-        t.start()
-    else:
-        run_audit_task.delay(audit_id)
-
-
 @login_required
 def create_audit(request: HttpRequest) -> HttpResponse:
-    """Crea una auditoría y la despacha al worker Celery."""
-    try:
-        # Rate limiting manual (en lugar de @ratelimit decorator).
-        # Razón: si el cache backend falla, el decorator lanza la
-        # excepción FUERA del try/except del body y no podemos
-        # manejarla. Hacerlo manual aquí deja que el try/except
-        # de abajo degrade gracefully (permite la operación si el
-        # cache no responde).
-        if request.method == "POST":
-            try:
-                limited = is_ratelimited(
-                    request=request,
-                    group="audits.create",
-                    key="user",
-                    rate="10/h",
-                    method="POST",
-                    increment=True,
-                )
-                if limited:
-                    messages.error(
-                        request,
-                        "Demasiadas auditorías en la última hora. Inténtalo más tarde.",
-                    )
-                    return redirect("users:dashboard")
-            except Exception as rl_exc:
-                # Si el cache está roto, NO bloqueamos al usuario.
-                logger.warning("Rate limit check failed (cache down?): %s", rl_exc)
-
-        month_start = timezone.now().replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
-        )
-        monthly_count = Audit.objects.filter(
-            user=request.user, created_at__gte=month_start
-        ).count()
-        remaining = request.user.monthly_audit_quota - monthly_count
-
-        if request.method == "POST":
-            if remaining <= 0:
+    """Crea una auditoría y la encola en Celery."""
+    # Rate limiting manual (no @ratelimit decorator) para poder capturar
+    # el error si el cache backend no está disponible y degradar con gracia.
+    if request.method == "POST":
+        try:
+            limited = is_ratelimited(
+                request=request,
+                group="audits.create",
+                key="user",
+                rate="10/h",
+                method="POST",
+                increment=True,
+            )
+            if limited:
                 messages.error(
                     request,
-                    "Has alcanzado tu cuota mensual. Actualiza tu plan o espera al próximo mes.",
+                    "Demasiadas auditorías en la última hora. Inténtalo más tarde.",
                 )
                 return redirect("users:dashboard")
+        except Exception as rl_exc:
+            # Cache caído: no bloqueamos al usuario, seguimos.
+            logger.warning("Rate limit check failed (cache down?): %s", rl_exc)
 
-            form = AuditForm(request.POST, user=request.user)
-            if form.is_valid():
-                audit = form.save(commit=False)
-                audit.user = request.user
-                audit.status = AuditStatus.PENDING
-                audit.save()
+    month_start = timezone.now().replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    monthly_count = Audit.objects.filter(
+        user=request.user, created_at__gte=month_start
+    ).count()
+    remaining = request.user.monthly_audit_quota - monthly_count
 
-                # Despacho: a broker Celery si existe, o a thread daemon
-                # en free tier (ver `_dispatch_audit`).
-                try:
-                    _dispatch_audit(audit.pk)
-                    messages.info(
-                        request,
-                        "Auditoría en cola. Los resultados aparecerán en breve.",
-                    )
-                except Exception as dispatch_exc:
-                    logger.exception("Error despachando audit %s", audit.pk)
-                    audit.status = AuditStatus.FAILED
-                    audit.error_message = (
-                        f"No se pudo despachar la auditoría: {dispatch_exc}"
-                    )
-                    audit.finished_at = timezone.now()
-                    audit.save()
-                    messages.error(
-                        request,
-                        "Error al lanzar la auditoría. Revisa los logs.",
-                    )
-                    return redirect("users:dashboard")
-
-                return redirect("audits:status", pk=audit.pk)
-        else:
-            form = AuditForm(user=request.user)
-
-        # Metadata de scanners para el template (checkboxes + locks).
-        has_advanced = request.user.has_feature("advanced_scanners")
-        all_scanners = get_all_scanner_meta()
-        available_keys = {
-            m.key for m in get_available_scanners("active", has_advanced)
-        }
-
-        scanner_data = []
-        for meta in all_scanners:
-            scanner_data.append({
-                "key": meta.key,
-                "label": meta.label,
-                "description": meta.description,
-                "tier": meta.tier,
-                "default": meta.default,
-                "icon": meta.icon,
-                "available": meta.key in available_keys,
-            })
-
-        return render(
-            request,
-            "audits/new.html",
-            {
-                "form": form,
-                "remaining": remaining,
-                "has_advanced": has_advanced,
-                "scanner_data": scanner_data,
-            },
-        )
-    except Exception as e:
-        logger.exception("create_audit error: %s", e)
-        # Solo admins ven el traceback. Esto es TEMPORAL: mientras
-        # debuggeamos el 500 en producción (sin acceso directo a logs
-        # de Render), devolvemos el traceback como text/plain al staff.
-        if request.user.is_authenticated and request.user.is_staff:
-            import traceback as _tb
-            return HttpResponse(
-                "=== create_audit crashed ===\n"
-                f"Exception: {type(e).__name__}: {e}\n\n"
-                + _tb.format_exc(),
-                content_type="text/plain; charset=utf-8",
-                status=500,
+    if request.method == "POST":
+        if remaining <= 0:
+            messages.error(
+                request,
+                "Has alcanzado tu cuota mensual. Espera al próximo mes.",
             )
-        raise
+            return redirect("users:dashboard")
+
+        form = AuditForm(request.POST, user=request.user)
+        if form.is_valid():
+            audit = form.save(commit=False)
+            audit.user = request.user
+            audit.status = AuditStatus.PENDING
+            audit.save()
+
+            try:
+                run_audit_task.delay(audit.pk)
+                messages.info(
+                    request,
+                    "Auditoría en cola. Los resultados aparecerán en breve.",
+                )
+            except Exception as dispatch_exc:
+                logger.exception("Error encolando audit %s", audit.pk)
+                audit.status = AuditStatus.FAILED
+                audit.error_message = f"No se pudo encolar la auditoría: {dispatch_exc}"
+                audit.finished_at = timezone.now()
+                audit.save()
+                messages.error(request, "Error al lanzar la auditoría. Revisa los logs.")
+                return redirect("users:dashboard")
+
+            return redirect("audits:status", pk=audit.pk)
+    else:
+        form = AuditForm(user=request.user)
+
+    # Metadata de scanners para el template (checkboxes + locks por plan).
+    has_advanced = request.user.has_feature("advanced_scanners")
+    all_scanners = get_all_scanner_meta()
+    available_keys = {
+        m.key for m in get_available_scanners("active", has_advanced)
+    }
+
+    scanner_data = [
+        {
+            "key": meta.key,
+            "label": meta.label,
+            "description": meta.description,
+            "tier": meta.tier,
+            "default": meta.default,
+            "icon": meta.icon,
+            "available": meta.key in available_keys,
+        }
+        for meta in all_scanners
+    ]
+
+    return render(
+        request,
+        "audits/new.html",
+        {
+            "form": form,
+            "remaining": remaining,
+            "has_advanced": has_advanced,
+            "scanner_data": scanner_data,
+        },
+    )
 
 
 @login_required
@@ -219,19 +149,17 @@ def audit_status(request: HttpRequest, pk: int) -> HttpResponse:
 @login_required
 def audit_status_api(request: HttpRequest, pk: int) -> HttpResponse:
     """
-    Endpoint JSON para polling. Devuelve el estado actual de la auditoría.
+    Endpoint JSON para polling del estado de una auditoría.
     El JS del template /status/ consulta esto periódicamente.
 
     Respuesta: {"id": 1, "status": "running", "score": null}
     """
     audit = get_object_or_404(Audit, pk=pk, user=request.user)
-    return JsonResponse(
-        {
-            "id": audit.pk,
-            "status": audit.status,
-            "score": audit.score,
-        }
-    )
+    return JsonResponse({
+        "id": audit.pk,
+        "status": audit.status,
+        "score": audit.score,
+    })
 
 
 @login_required
@@ -239,7 +167,6 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
     """Informe completo de una auditoría. Solo el dueño puede verlo."""
     audit = get_object_or_404(Audit, pk=pk, user=request.user)
 
-    # Si todavía está en proceso, redirige a la página de espera.
     if audit.status in (AuditStatus.PENDING, AuditStatus.RUNNING):
         return redirect("audits:status", pk=audit.pk)
 
@@ -259,5 +186,5 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
 
 @login_required
 def audit_list(request: HttpRequest) -> HttpResponse:
-    """Listado de auditorías del usuario (redirect al dashboard por ahora)."""
+    """Listado de auditorías del usuario (redirect al dashboard)."""
     return redirect(reverse("users:dashboard"))

@@ -14,9 +14,6 @@ celery>=5.4
 redis>=5.0
 django-redis>=5.4
 
-# Servidor WSGI de producción
-gunicorn>=22.0
-
 # Cliente HTTP para los scanners
 requests>=2.32
 
