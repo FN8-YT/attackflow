@@ -15,7 +15,7 @@ class AuditForm(forms.ModelForm):
 
     Incluye:
     - target_url: URL del objetivo.
-    - scan_mode: pasivo o activo (filtrado por plan).
+    - scan_mode: pasivo o activo (todos los modos disponibles para todos).
     - selected_scanners: checkboxes de módulos a ejecutar.
     """
 
@@ -53,34 +53,22 @@ class AuditForm(forms.ModelForm):
 
     def __init__(self, *args, user=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self._user = user
 
-        # Filtrar modos según plan del usuario.
-        if user:
-            allowed = user.plan_config.get("scan_modes", ["passive"])
-            choices = [
-                (c.value, c.label) for c in ScanMode
-                if c.value in allowed
-            ]
-            self.fields["scan_mode"].choices = choices
+        # Todos los modos de escaneo disponibles para todos los usuarios.
+        self.fields["scan_mode"].choices = [(c.value, c.label) for c in ScanMode]
 
-        # Construir choices de scanners con TODA la metadata.
-        # Todos aparecen como opciones; el template usa data-attrs
-        # para mostrar locks y tooltips según tier.
-        all_choices = []
-        for entry in SCANNER_REGISTRY:
-            meta = entry["meta"]
-            all_choices.append((meta.key, meta.label))
-        self.fields["selected_scanners"].choices = all_choices
-
-        # Defaults: marcar los que correspondan por defecto.
-        has_advanced = user.has_feature("advanced_scanners") if user else False
-        # Por defecto: todos los disponibles marcados.
-        default_keys = [
-            m.key for m in get_available_scanners("active", has_advanced)
-            if m.default
+        # Todos los scanners como opciones.
+        self.fields["selected_scanners"].choices = [
+            (entry["meta"].key, entry["meta"].label)
+            for entry in SCANNER_REGISTRY
         ]
-        self.fields["selected_scanners"].initial = default_keys
+
+        # Por defecto: marcar los scanners con default=True.
+        self.fields["selected_scanners"].initial = [
+            entry["meta"].key
+            for entry in SCANNER_REGISTRY
+            if entry["meta"].default
+        ]
 
     def clean_target_url(self) -> str:
         url = self.cleaned_data["target_url"]
@@ -90,38 +78,20 @@ class AuditForm(forms.ModelForm):
             raise
         return url
 
-    def clean_scan_mode(self) -> str:
-        mode = self.cleaned_data["scan_mode"]
-        if self._user:
-            allowed = self._user.plan_config.get("scan_modes", ["passive"])
-            if mode not in allowed:
-                raise ValidationError(
-                    "Tu plan no permite el modo de escaneo activo. "
-                    "Actualiza a Premium."
-                )
-        return mode
-
     def clean_selected_scanners(self) -> list[str]:
         """
-        Validar la selección de scanners contra el plan del usuario.
-        Eliminar silenciosamente cualquier scanner al que no tenga acceso
-        (protección contra manipulación del HTML).
+        Valida la selección de scanners contra el modo de escaneo.
+        Los scanners de tier 'active' solo se permiten con scan_mode='active'.
         """
         selected = self.cleaned_data.get("selected_scanners", [])
         if not selected:
             return []
 
-        # Determinar qué scanners tiene acceso este usuario.
-        has_advanced = (
-            self._user.has_feature("advanced_scanners") if self._user else False
-        )
         scan_mode = self.cleaned_data.get("scan_mode", "passive")
-        available = get_available_scanners(scan_mode, has_advanced)
+        available = get_available_scanners(scan_mode)
         available_keys = {m.key for m in available}
 
-        # Filtrar: solo los que están en su tier permitido.
-        validated = [key for key in selected if key in available_keys]
-        return validated
+        return [key for key in selected if key in available_keys]
 
     def save(self, commit=True):
         """Guardar la selección de scanners en el campo JSON del modelo."""

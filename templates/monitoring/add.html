@@ -7,7 +7,6 @@
 <!-- Terminal header -->
 <div class="terminal" style="margin-bottom:1.4rem;">
     <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">monitor</span> <span class="flag">--add-target</span></div>
-    <div class="output">> Quota: {{ used }}/{{ target_limit }} targets used</div>
     <div class="output">> Configure URL, interval and start monitoring<span class="cursor"></span></div>
 </div>
 
@@ -15,7 +14,6 @@
     <div class="card">
         <div class="card-header">
             <span>new_monitor_target</span>
-            <span class="muted small">{{ used }}/{{ target_limit }} used</span>
         </div>
 
         <form method="post" novalidate>
@@ -81,16 +79,6 @@
             </div>
         </form>
     </div>
-
-    {% if not request.user.is_premium %}
-    <!-- Upsell -->
-    <div style="margin-top:1rem;padding:.7rem .9rem;background:var(--xp-blue-lo);border:1px solid var(--xp-blue-dim);font-size:.68rem;color:var(--text-gray);">
-        <span style="color:var(--xp-blue);font-weight:600;">FREE plan:</span>
-        1 target · checks cada 15 min mínimo.
-        <a href="{% url 'users:plans' %}" style="color:var(--xp-blue);margin-left:.3rem;">Upgrade to Premium →</a>
-        para 10 targets y checks cada 5 min.
-    </div>
-    {% endif %}
 </div>
 
 <style>

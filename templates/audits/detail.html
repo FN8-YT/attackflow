@@ -53,15 +53,9 @@
     </div>
 
     <div class="stat-card">
-        {% if can_export_pdf %}
         <a href="{% url 'reports:export_pdf' audit.pk %}" class="btn btn-primary" style="width:100%; justify-content:center; margin-top:.3rem;">
             EXPORT PDF
         </a>
-        {% else %}
-        <a href="{% url 'users:plans' %}" class="btn btn-ghost" style="width:100%; justify-content:center; margin-top:.3rem; opacity:.6;" title="Requires Premium">
-            PDF (PREMIUM)
-        </a>
-        {% endif %}
         <div class="stat-label" style="margin-top:.5rem;">report</div>
     </div>
 </div>

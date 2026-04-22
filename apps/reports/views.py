@@ -1,8 +1,8 @@
 """
 Vistas de reportes — exportación PDF.
 
-Usa weasyprint para renderizar el template HTML a PDF.
-Solo disponible para usuarios con la feature 'pdf_export' (Premium+).
+Usa WeasyPrint para renderizar el template HTML a PDF.
+Disponible para todos los usuarios autenticados sin restricciones.
 """
 from __future__ import annotations
 
@@ -24,15 +24,6 @@ logger = logging.getLogger(__name__)
 def export_pdf(request: HttpRequest, pk: int) -> HttpResponse:
     """Genera y descarga el informe de auditoría como PDF."""
     audit = get_object_or_404(Audit, pk=pk, user=request.user)
-
-    # Feature gate: solo premium+ puede exportar.
-    if not request.user.has_feature("pdf_export"):
-        messages.error(
-            request,
-            "La exportación a PDF requiere un plan Premium. "
-            "Consulta la página de planes para más información.",
-        )
-        return redirect("audits:detail", pk=audit.pk)
 
     if audit.status != AuditStatus.COMPLETED:
         messages.error(request, "Solo se pueden exportar auditorías completadas.")

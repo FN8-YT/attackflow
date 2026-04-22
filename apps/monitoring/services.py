@@ -1,27 +1,33 @@
 """
-Monitoring Service — lógica de comprobación y detección de cambios.
+Monitoring Check Engine — motor de comprobación modular.
 
-Diseño:
-- run_check(target): ejecuta una comprobación y devuelve MonitorCheck.
-- _detect_changes(target, old, new): compara dos checks y crea MonitorChange.
-- _send_alert_email(target, changes): envía email al usuario para cambios
-  CRITICAL/HIGH. Lógica anti-spam: STATUS_DOWN solo genera 1 email por
-  incidente (no repite mientras siga caído).
-- Lightweight: sin scanner completo. Solo HTTP uptime, headers, SSL, content hash.
-- Anti-SSRF: reusa resolve_and_validate de audits.
+Flujo por ejecución (run_check):
+  1. Validación anti-SSRF de la URL
+  2. HTTP probe: uptime, response time, security headers, content hash,
+     todos los headers raw, body snippet (para análisis posterior)
+  3. SSL probe: expiración, emisor, fingerprint
+  4. Tech detection: stack tecnológico desde headers + cookies + HTML
+  5. WAF detection: WAF/CDN desde response headers
+  6. Sensitive path discovery: paths sensibles con status != 404
+  7. Security score: puntuación 0-100 ponderada
+  8. Crear MonitorCheck con todos los datos
+  9. Detectar cambios vs check anterior → crear MonitorChange records
+ 10. Actualizar campos cacheados en MonitorTarget
+ 11. Enviar alertas email para cambios CRITICAL/HIGH
 
 Seguridad:
-- La URL se valida antes de hacer requests.
-- Timeout de 10s por request.
-- Solo permite http/https a IPs públicas.
+  - Anti-SSRF via resolve_and_validate (audits).
+  - Timeout 10s para el probe principal, 3s para sensitive paths.
+  - Solo IPs públicas (filtrado en resolve_and_validate).
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import logging
 import socket
 import ssl
-import datetime
+
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -31,12 +37,27 @@ from django.utils import timezone
 from apps.audits.validators import resolve_and_validate
 from django.core.exceptions import ValidationError
 
+from .checks import (
+    calculate_security_score,
+    check_sensitive_paths,
+    check_subdomains,
+    detect_technologies,
+    detect_waf,
+    process_screenshot,
+)
+
 logger = logging.getLogger(__name__)
 
-TIMEOUT = 10
-UA = "AttackFlow-Monitor/1.0"
+HTTP_TIMEOUT     = 10
+PATH_TIMEOUT     = 3
+UA               = "AttackFlow-Monitor/1.0"
+SSL_WARN_DAYS    = 30
+SSL_CRITICAL_DAYS = 7
+SLOW_RESPONSE_MS = 3000
+SCORE_DROP_THRESHOLD  = 10   # Reportar si el score cae >= 10 puntos
+DEEP_CHECK_INTERVAL_H = 6    # Horas entre deep checks (subdomains + sensitive paths)
 
-# Cabeceras de seguridad que se monitorean para detectar cambios.
+# Headers de seguridad que se monitorizan para detectar cambios.
 SECURITY_HEADERS = [
     "Strict-Transport-Security",
     "Content-Security-Policy",
@@ -48,15 +69,11 @@ SECURITY_HEADERS = [
     "X-XSS-Protection",
     "Cross-Origin-Opener-Policy",
     "Cross-Origin-Resource-Policy",
+    "Cross-Origin-Embedder-Policy",
 ]
 
-# Umbral de alerta de expiración SSL.
-SSL_WARN_DAYS = 30
-SSL_CRITICAL_DAYS = 7
 
-# Umbral de degradación de respuesta (ms).
-SLOW_RESPONSE_MS = 3000
-
+# ── Public API ──────────────────────────────────────────────────────────────
 
 def run_check(target) -> "MonitorCheck":
     """
@@ -65,51 +82,102 @@ def run_check(target) -> "MonitorCheck":
     Retorna el MonitorCheck creado. Los MonitorChange se crean
     automáticamente si se detectan diferencias con el check anterior.
     """
-    from apps.monitoring.models import MonitorCheck, CheckStatus, MonitorTarget
+    from .models import MonitorCheck, CheckStatus
 
+    # 1. Validación anti-SSRF
     try:
         scan_target = resolve_and_validate(target.url)
     except ValidationError as exc:
         check = MonitorCheck.objects.create(
             target=target,
             status=CheckStatus.ERROR,
-            error_message=f"URL inválida o bloqueada por SSRF: {exc}",
+            error_message=f"URL inválida o bloqueada: {exc}",
         )
         _update_target_status(target, check)
         return check
 
-    # --- HTTP probe ---
-    http_data = _probe_http(target.url)
+    # 2. HTTP probe
+    probe = _probe_http(target.url)
 
-    # --- SSL probe ---
+    # 3. SSL probe
     ssl_data: dict = {}
     if scan_target.scheme == "https":
         ssl_data = _probe_ssl(scan_target.hostname, scan_target.port or 443)
 
-    # Determine status.
-    if http_data.get("error"):
-        status = CheckStatus.DOWN if "Connection" in str(http_data.get("error","")) else CheckStatus.ERROR
-    elif http_data.get("status_code", 0) >= 500:
+    # 4. Determinar status
+    if probe.get("error"):
+        from .models import CheckStatus
+        status = (
+            CheckStatus.DOWN
+            if "connection" in probe["error"].lower()
+            else CheckStatus.ERROR
+        )
+    elif probe.get("status_code", 0) >= 500:
+        from .models import CheckStatus
         status = CheckStatus.DOWN
-    elif http_data.get("status_code", 0) > 0:
+    elif probe.get("status_code", 0) > 0:
+        from .models import CheckStatus
         status = CheckStatus.UP
     else:
+        from .models import CheckStatus
         status = CheckStatus.ERROR
 
+    raw_headers   = probe.get("raw_headers", {})
+    body_snippet  = probe.get("body_snippet", "")
+    cookies       = probe.get("cookies", {})
+    ssl_days      = ssl_data.get("expiry_days")
+
+    # 5. Tech + WAF + sensitive paths
+    # En modo live (intervalo ≤ 60s) se omite el escaneo de paths sensibles
+    # en cada check para no saturar el servidor. El deep check (cada 6h)
+    # siempre los incluye, independientemente del intervalo.
+    is_live = getattr(target, "check_interval", 1800) <= 60
+    technologies: list[str] = []
+    waf_detected: str = ""
+    sensitive_paths: list[dict] = []
+
+    if not probe.get("error"):
+        technologies = detect_technologies(
+            raw_headers=raw_headers,
+            body_snippet=body_snippet,
+            cookies=cookies,
+        )
+        waf_detected = detect_waf(raw_headers)
+
+        if target.check_sensitive_paths and not is_live:
+            try:
+                sensitive_paths = check_sensitive_paths(
+                    target.url, timeout=PATH_TIMEOUT
+                )
+            except Exception:
+                logger.exception("Sensitive path scan failed for %s", target.url)
+
+    # 6. Security score
+    security_score = calculate_security_score(
+        headers_snapshot=probe.get("headers", {}),
+        ssl_expiry_days=ssl_days,
+        sensitive_paths_found=sensitive_paths,
+    )
+
+    # 7. Crear MonitorCheck
     check = MonitorCheck.objects.create(
         target=target,
         status=status,
-        http_status_code=http_data.get("status_code"),
-        response_time_ms=http_data.get("response_ms"),
-        headers_snapshot=http_data.get("headers", {}),
-        content_hash=http_data.get("content_hash", ""),
-        ssl_expiry_days=ssl_data.get("expiry_days"),
-        ssl_issuer=ssl_data.get("issuer", "")[:256],
-        ssl_fingerprint=ssl_data.get("fingerprint", "")[:128],
-        error_message=http_data.get("error", "") or ssl_data.get("error", ""),
+        http_status_code=probe.get("status_code"),
+        response_time_ms=probe.get("response_ms"),
+        headers_snapshot=probe.get("headers", {}),
+        content_hash=probe.get("content_hash", ""),
+        ssl_expiry_days=ssl_days,
+        ssl_issuer=(ssl_data.get("issuer") or "")[:256],
+        ssl_fingerprint=(ssl_data.get("fingerprint") or "")[:128],
+        technologies=technologies,
+        waf_detected=waf_detected,
+        sensitive_paths_found=sensitive_paths,
+        security_score=security_score,
+        error_message=probe.get("error", "") or ssl_data.get("error", ""),
     )
 
-    # Detect changes vs previous check.
+    # 8. Detectar cambios vs check anterior
     try:
         prev = (
             MonitorCheck.objects
@@ -120,40 +188,70 @@ def run_check(target) -> "MonitorCheck":
         )
         if prev:
             _detect_changes(target, prev, check)
-    except Exception as exc:
-        logger.warning("Change detection failed for target %s: %s", target.pk, exc)
+    except Exception:
+        logger.exception("Change detection failed for target %s", target.pk)
 
+    # 9. Actualizar cache del target
     _update_target_status(target, check)
+
+    # 10. Deep check (subdomains + sensitive paths para live targets) cada 6h
+    if _is_deep_check_due(target):
+        try:
+            _run_deep_check(target, check)
+        except Exception:
+            logger.exception("Deep check falló para target %s", target.pk)
+
     return check
 
 
+# ── Internal probes ─────────────────────────────────────────────────────────
+
 def _probe_http(url: str) -> dict:
-    """GET the URL and return timing, status, key headers, content hash."""
+    """
+    Realiza un GET y retorna métricas + snapshots.
+
+    Keys del dict retornado:
+        status_code, response_ms, headers (security headers),
+        raw_headers (todos), body_snippet, cookies, content_hash.
+        En caso de error: {"error": "mensaje"}.
+    """
     try:
         start = timezone.now()
         resp = requests.get(
             url,
-            timeout=TIMEOUT,
+            timeout=HTTP_TIMEOUT,
             headers={"User-Agent": UA},
             allow_redirects=True,
         )
-        ms = int((timezone.now() - start).total_seconds() * 1000)
+        elapsed_ms = int((timezone.now() - start).total_seconds() * 1000)
 
-        # Snapshot security headers.
-        headers = {}
+        # Solo security headers para el snapshot de cambios
+        sec_headers = {}
         for h in SECURITY_HEADERS:
             val = resp.headers.get(h, "")
             if val:
-                headers[h] = val
+                sec_headers[h] = val
 
-        # Hash first 50KB of content.
-        content = resp.text[:51200]
-        content_hash = hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
+        # Todos los headers para tech/WAF detection
+        raw_headers = dict(resp.headers)
+
+        # Cookies
+        cookies = {c.name: c.value for c in resp.cookies}
+
+        # Hash de los primeros 50KB
+        body_snippet = resp.text[:51200]
+        content_hash = hashlib.md5(
+            body_snippet.encode(errors="replace"),
+            usedforsecurity=False,
+        ).hexdigest()
 
         return {
-            "status_code": resp.status_code,
-            "response_ms": ms,
-            "headers": headers,
+            "status_code":  resp.status_code,
+            "response_ms":  elapsed_ms,
+            "headers":      sec_headers,
+            "raw_headers":  raw_headers,
+            "body_snippet": body_snippet,
+            "cookies":      cookies,
             "content_hash": content_hash,
         }
     except requests.exceptions.ConnectionError as exc:
@@ -165,34 +263,29 @@ def _probe_http(url: str) -> dict:
 
 
 def _probe_ssl(hostname: str, port: int = 443) -> dict:
-    """Get SSL cert info: expiry, issuer, fingerprint."""
+    """Obtiene info del certificado SSL: expiración, emisor, fingerprint."""
     try:
         ctx = ssl.create_default_context()
-        with socket.create_connection((hostname, port), timeout=TIMEOUT) as sock:
+        with socket.create_connection((hostname, port), timeout=HTTP_TIMEOUT) as sock:
             with ctx.wrap_socket(sock, server_hostname=hostname) as ssock:
                 cert = ssock.getpeercert()
                 bin_cert = ssock.getpeercert(binary_form=True)
 
-        # Expiry.
         not_after = cert.get("notAfter", "")
+        expiry_days: Optional[int] = None
         if not_after:
             exp = datetime.datetime.strptime(not_after, "%b %d %H:%M:%S %Y %Z")
             exp = exp.replace(tzinfo=datetime.timezone.utc)
-            now = datetime.datetime.now(datetime.timezone.utc)
-            expiry_days = (exp - now).days
-        else:
-            expiry_days = None
+            expiry_days = (exp - datetime.datetime.now(datetime.timezone.utc)).days
 
-        # Issuer (flatten).
         issuer_dict = dict(x[0] for x in cert.get("issuer", []))
         issuer = issuer_dict.get("organizationName", "") or issuer_dict.get("commonName", "")
 
-        # SHA-256 fingerprint.
-        fingerprint = hashlib.sha256(bin_cert).hexdigest()[:16] if bin_cert else ""
+        fingerprint = hashlib.sha256(bin_cert).hexdigest()[:32] if bin_cert else ""
 
         return {
             "expiry_days": expiry_days,
-            "issuer": issuer,
+            "issuer":      issuer,
             "fingerprint": fingerprint,
         }
     except ssl.SSLError as exc:
@@ -201,18 +294,21 @@ def _probe_ssl(hostname: str, port: int = 443) -> dict:
         return {"error": f"Connection error: {exc}"}
     except Exception as exc:
         logger.debug("SSL probe error for %s: %s", hostname, exc)
-        return {"error": f"Error: {exc}"}
+        return {"error": f"Unexpected SSL error: {exc}"}
 
+
+# ── Change detection ────────────────────────────────────────────────────────
 
 def _detect_changes(target, prev: "MonitorCheck", curr: "MonitorCheck") -> None:
     """
-    Compara prev vs curr y crea MonitorChange por cada diferencia detectada.
+    Compara dos MonitorCheck y crea MonitorChange records por cada
+    diferencia relevante detectada.
     """
-    from apps.monitoring.models import MonitorChange, ChangeType, ChangeSeverity
+    from .models import MonitorChange, ChangeType, ChangeSeverity
 
-    changes = []
+    changes: list[dict] = []
 
-    # 1. Status transition.
+    # ── 1. Status transition ────────────────────────────────────────────
     if prev.status != curr.status:
         if curr.status == "down":
             changes.append(dict(
@@ -231,23 +327,22 @@ def _detect_changes(target, prev: "MonitorCheck", curr: "MonitorCheck") -> None:
                 new_value=curr.status,
             ))
 
-    # 2. HTTP status code changed.
+    # ── 2. HTTP status code ─────────────────────────────────────────────
     if (prev.http_status_code and curr.http_status_code
             and prev.http_status_code != curr.http_status_code):
+        sev = ChangeSeverity.HIGH if curr.http_status_code >= 400 else ChangeSeverity.MEDIUM
         changes.append(dict(
             change_type=ChangeType.HTTP_STATUS,
-            severity=ChangeSeverity.HIGH if curr.http_status_code >= 400 else ChangeSeverity.MEDIUM,
-            description=f"Código HTTP: {prev.http_status_code} → {curr.http_status_code}",
+            severity=sev,
+            description=f"HTTP status: {prev.http_status_code} → {curr.http_status_code}",
             old_value=str(prev.http_status_code),
             new_value=str(curr.http_status_code),
         ))
 
-    # 3. Security headers diff.
+    # ── 3. Security headers diff ────────────────────────────────────────
     old_hdrs = prev.headers_snapshot or {}
     new_hdrs = curr.headers_snapshot or {}
-
-    all_hdr_keys = set(old_hdrs) | set(new_hdrs)
-    for hdr in all_hdr_keys:
+    for hdr in set(old_hdrs) | set(new_hdrs):
         old_val = old_hdrs.get(hdr, "")
         new_val = new_hdrs.get(hdr, "")
         if old_val == new_val:
@@ -256,15 +351,15 @@ def _detect_changes(target, prev: "MonitorCheck", curr: "MonitorCheck") -> None:
             changes.append(dict(
                 change_type=ChangeType.HEADER_REMOVED,
                 severity=ChangeSeverity.HIGH,
-                description=f"Header eliminado: {hdr}",
+                description=f"Security header eliminado: {hdr}",
                 old_value=old_val[:300],
                 new_value="",
             ))
         elif not old_val and new_val:
             changes.append(dict(
                 change_type=ChangeType.HEADER_ADDED,
-                severity=ChangeSeverity.INFO,
-                description=f"Header añadido: {hdr}",
+                severity=ChangeSeverity.LOW,
+                description=f"Security header añadido: {hdr}",
                 old_value="",
                 new_value=new_val[:300],
             ))
@@ -272,12 +367,12 @@ def _detect_changes(target, prev: "MonitorCheck", curr: "MonitorCheck") -> None:
             changes.append(dict(
                 change_type=ChangeType.HEADER_CHANGED,
                 severity=ChangeSeverity.MEDIUM,
-                description=f"Header modificado: {hdr}",
+                description=f"Security header modificado: {hdr}",
                 old_value=old_val[:300],
                 new_value=new_val[:300],
             ))
 
-    # 4. SSL expiry warnings.
+    # ── 4. SSL expiry warnings ──────────────────────────────────────────
     if curr.ssl_expiry_days is not None:
         if curr.ssl_expiry_days <= SSL_CRITICAL_DAYS:
             changes.append(dict(
@@ -297,7 +392,6 @@ def _detect_changes(target, prev: "MonitorCheck", curr: "MonitorCheck") -> None:
                     new_value=str(curr.ssl_expiry_days),
                 ))
 
-    # SSL fingerprint changed → cert renewed or replaced.
     if (prev.ssl_fingerprint and curr.ssl_fingerprint
             and prev.ssl_fingerprint != curr.ssl_fingerprint):
         changes.append(dict(
@@ -308,7 +402,7 @@ def _detect_changes(target, prev: "MonitorCheck", curr: "MonitorCheck") -> None:
             new_value=curr.ssl_fingerprint,
         ))
 
-    # 5. Content changed.
+    # ── 5. Content changed ──────────────────────────────────────────────
     if (prev.content_hash and curr.content_hash
             and prev.content_hash != curr.content_hash
             and curr.status == "up"):
@@ -320,99 +414,116 @@ def _detect_changes(target, prev: "MonitorCheck", curr: "MonitorCheck") -> None:
             new_value=curr.content_hash,
         ))
 
-    # 6. Response time degradation.
+    # ── 6. Response time degradation ────────────────────────────────────
     if (prev.response_time_ms and curr.response_time_ms
             and curr.response_time_ms > SLOW_RESPONSE_MS
             and curr.response_time_ms > prev.response_time_ms * 2):
         changes.append(dict(
             change_type=ChangeType.RESPONSE_SLOW,
             severity=ChangeSeverity.LOW,
-            description=f"Tiempo de respuesta degradado: {prev.response_time_ms}ms → {curr.response_time_ms}ms",
+            description=f"Respuesta degradada: {prev.response_time_ms}ms → {curr.response_time_ms}ms",
             old_value=str(prev.response_time_ms),
             new_value=str(curr.response_time_ms),
         ))
 
-    # Persist.
-    created_changes = []
+    # ── 7. Technology changes ───────────────────────────────────────────
+    prev_techs = set(prev.technologies or [])
+    curr_techs = set(curr.technologies or [])
+
+    for tech in curr_techs - prev_techs:
+        changes.append(dict(
+            change_type=ChangeType.TECH_ADDED,
+            severity=ChangeSeverity.MEDIUM,
+            description=f"Tecnología detectada: {tech}",
+            old_value="",
+            new_value=tech,
+        ))
+    for tech in prev_techs - curr_techs:
+        changes.append(dict(
+            change_type=ChangeType.TECH_REMOVED,
+            severity=ChangeSeverity.LOW,
+            description=f"Tecnología ya no detectada: {tech}",
+            old_value=tech,
+            new_value="",
+        ))
+
+    # ── 8. WAF changes ──────────────────────────────────────────────────
+    if not prev.waf_detected and curr.waf_detected:
+        changes.append(dict(
+            change_type=ChangeType.WAF_APPEARED,
+            severity=ChangeSeverity.INFO,
+            description=f"WAF/CDN detectado: {curr.waf_detected}",
+            old_value="",
+            new_value=curr.waf_detected,
+        ))
+    elif prev.waf_detected and not curr.waf_detected:
+        changes.append(dict(
+            change_type=ChangeType.WAF_GONE,
+            severity=ChangeSeverity.HIGH,
+            description=f"WAF/CDN ya no detectado (era {prev.waf_detected})",
+            old_value=prev.waf_detected,
+            new_value="",
+        ))
+
+    # ── 9. New sensitive paths found ────────────────────────────────────
+    prev_paths = {p["path"] for p in (prev.sensitive_paths_found or [])}
+    for path_info in (curr.sensitive_paths_found or []):
+        if path_info["path"] not in prev_paths:
+            sev_map = {
+                "critical": ChangeSeverity.CRITICAL,
+                "high":     ChangeSeverity.HIGH,
+                "medium":   ChangeSeverity.MEDIUM,
+                "info":     ChangeSeverity.INFO,
+            }
+            sev = sev_map.get(path_info.get("severity", "info"), ChangeSeverity.INFO)
+            changes.append(dict(
+                change_type=ChangeType.SENSITIVE_PATH,
+                severity=sev,
+                description=f"{path_info['label']} expuesto: {path_info['path']} [{path_info['status_code']}]",
+                old_value="",
+                new_value=path_info["path"],
+            ))
+
+    # ── 10. Security score drop ─────────────────────────────────────────
+    if (prev.security_score is not None and curr.security_score is not None
+            and (prev.security_score - curr.security_score) >= SCORE_DROP_THRESHOLD):
+        drop = prev.security_score - curr.security_score
+        changes.append(dict(
+            change_type=ChangeType.SCORE_DROP,
+            severity=ChangeSeverity.HIGH,
+            description=f"Security score bajó {drop} puntos: {prev.security_score} → {curr.security_score}",
+            old_value=str(prev.security_score),
+            new_value=str(curr.security_score),
+        ))
+
+    # ── Persist + alertas ───────────────────────────────────────────────
+    created: list = []
     for c in changes:
-        created_changes.append(
+        created.append(
             MonitorChange.objects.create(target=target, monitor_check=curr, **c)
         )
 
-    # Alertas por email para cambios importantes.
-    if created_changes:
+    if created:
         try:
-            _send_alert_email(target, created_changes)
-        except Exception as exc:
-            logger.warning("No se pudo enviar alerta email para target %s: %s", target.pk, exc)
+            _send_alert_email(target, created)
+        except Exception:
+            logger.warning(
+                "No se pudo enviar alerta email para target %s", target.pk,
+            )
 
 
-def _send_alert_email(target, changes: list) -> None:
-    """
-    Envía email al usuario para cambios CRITICAL/HIGH.
-
-    Anti-spam:
-    - Solo procesa cambios CRITICAL o HIGH.
-    - Para STATUS_DOWN: solo envía email si el target NO estaba ya caído
-      antes de este check (evita spam mientras sigue offline).
-    - Los demás cambios críticos (SSL expiry, headers) siempre notifican.
-    """
-    from django.core.mail import send_mail
-    from django.template.loader import render_to_string
-
-    ALERT_SEVERITIES = {"critical", "high"}
-
-    # Filtrar solo cambios importantes.
-    alertable = [c for c in changes if c.severity in ALERT_SEVERITIES]
-    if not alertable:
-        return
-
-    # Anti-spam para STATUS_DOWN: si consecutive_failures > 1, ya enviamos
-    # alerta cuando se produjo el primer fallo. No repetir.
-    # (consecutive_failures aún no se actualizó; se actualiza en _update_target_status
-    #  que se llama después. Por eso usamos el valor actual del target.)
-    has_down = any(c.change_type == "status_down" for c in alertable)
-    if has_down and target.consecutive_failures > 0:
-        # Ya estaba caído antes: filtrar STATUS_DOWN del lote actual.
-        alertable = [c for c in alertable if c.change_type != "status_down"]
-        if not alertable:
-            return
-
-    user = target.user
-    context = {
-        "user": user,
-        "target": target,
-        "changes": alertable,
-    }
-
-    subject = render_to_string("email/monitor_alert_subject.txt", context).strip()
-    body_txt = render_to_string("email/monitor_alert.txt", context)
-
-    send_mail(
-        subject=subject,
-        message=body_txt,
-        from_email=None,   # DEFAULT_FROM_EMAIL de settings
-        recipient_list=[user.email],
-        fail_silently=False,
-    )
-    logger.info(
-        "Monitor alert email sent to %s for target '%s' (%d change(s))",
-        user.email, target.name, len(alertable),
-    )
-
+# ── Status update ───────────────────────────────────────────────────────────
 
 def _update_target_status(target, check: "MonitorCheck") -> None:
-    """Actualiza el estado cacheado del target con los datos del último check."""
-    from django.utils import timezone
+    """Actualiza los campos cacheados del target con los datos del último check."""
+    from .models import MonitorCheck
 
-    # Consecutive failures counter.
-    if check.status == "up":
-        consecutive_failures = 0
-    else:
-        consecutive_failures = target.consecutive_failures + 1
+    consecutive_failures = (
+        0 if check.status == "up"
+        else target.consecutive_failures + 1
+    )
 
-    # Uptime % (last 30 checks).
-    from apps.monitoring.models import MonitorCheck
+    # Uptime % sobre los últimos 30 checks
     recent = (
         MonitorCheck.objects
         .filter(target=target)
@@ -420,17 +531,230 @@ def _update_target_status(target, check: "MonitorCheck") -> None:
     )
     total = recent.count()
     up_count = sum(1 for c in recent if c.status == "up")
-    uptime = round((up_count / total * 100), 2) if total else None
+    uptime = round(up_count / total * 100, 2) if total else None
 
-    target.current_status = check.status
-    target.last_check_at = timezone.now()
-    target.last_response_ms = check.response_time_ms
-    target.last_http_status = check.http_status_code
-    target.last_ssl_days = check.ssl_expiry_days
+    target.current_status       = check.status
+    target.last_check_at        = timezone.now()
+    target.last_response_ms     = check.response_time_ms
+    target.last_http_status     = check.http_status_code
+    target.last_ssl_days        = check.ssl_expiry_days
     target.consecutive_failures = consecutive_failures
-    target.uptime_pct = uptime
+    target.uptime_pct           = uptime
+    target.last_security_score  = check.security_score
+    target.last_technologies    = check.technologies or []
+    target.last_waf             = check.waf_detected or ""
+
     target.save(update_fields=[
         "current_status", "last_check_at", "last_response_ms",
         "last_http_status", "last_ssl_days", "consecutive_failures",
-        "uptime_pct", "updated_at",
+        "uptime_pct", "last_security_score", "last_technologies",
+        "last_waf", "updated_at",
     ])
+
+
+# ── Deep check (subdomains + sensitive paths each 6h) ───────────────────────
+
+def _is_deep_check_due(target) -> bool:
+    """True si han pasado ≥ DEEP_CHECK_INTERVAL_H desde el último deep check."""
+    if not target.last_deep_check_at:
+        return True
+    threshold = datetime.timedelta(hours=DEEP_CHECK_INTERVAL_H)
+    return timezone.now() >= target.last_deep_check_at + threshold
+
+
+def _run_deep_check(target, check: "MonitorCheck") -> None:
+    """
+    Ejecuta:
+    1. Sensitive path scan (incluso para live targets).
+    2. Subdomain discovery.
+
+    Actualiza MonitorSubdomain records y last_deep_check_at.
+    También parchea el MonitorCheck actual con los sensitive_paths encontrados.
+    """
+    logger.info("Deep check para target %s (%s)", target.pk, target.url)
+
+    # 1. Sensitive paths (para live targets que lo omiten en el check normal)
+    sensitive_paths: list[dict] = []
+    if target.check_sensitive_paths:
+        try:
+            sensitive_paths = check_sensitive_paths(target.url, timeout=PATH_TIMEOUT)
+            if sensitive_paths:
+                # Parchar el check actual con los paths encontrados
+                check.sensitive_paths_found = sensitive_paths
+                check.save(update_fields=["sensitive_paths_found"])
+                logger.info(
+                    "Deep check: %d sensitive paths encontrados en %s",
+                    len(sensitive_paths), target.url,
+                )
+        except Exception:
+            logger.exception("Sensitive path scan (deep) falló para %s", target.url)
+
+    # 2. Subdomain discovery
+    subdomain_results: list[dict] = []
+    try:
+        subdomain_results = check_subdomains(target.url)
+        _update_subdomains(target, subdomain_results)
+        logger.info(
+            "Deep check: %d subdominios encontrados para %s",
+            len(subdomain_results), target.url,
+        )
+    except Exception:
+        logger.exception("Subdomain discovery falló para %s", target.url)
+
+    # 3. Screenshot visual
+    try:
+        _run_screenshot(target, check)
+    except Exception:
+        logger.exception("Screenshot falló para %s", target.url)
+
+    # 4. Broadcast surface update via WebSocket
+    try:
+        from .tasks import _broadcast_surface_update
+        _broadcast_surface_update(target, subdomain_results, sensitive_paths)
+    except Exception:
+        pass  # No crítico
+
+    # 5. Actualizar timestamp del deep check
+    target.last_deep_check_at = timezone.now()
+    target.save(update_fields=["last_deep_check_at", "updated_at"])
+
+
+def _run_screenshot(target, check: "MonitorCheck") -> None:
+    """
+    Toma un screenshot del target y lo guarda como MonitorScreenshot.
+    Compara con el screenshot anterior para detectar defacements.
+    Hace broadcast WebSocket si hay un cambio significativo.
+    """
+    from .models import MonitorScreenshot
+
+    # Obtener screenshot anterior para diff
+    previous_screenshot = (
+        MonitorScreenshot.objects
+        .filter(monitor_check__target=target)
+        .order_by("-created_at")
+        .first()
+    )
+    previous_b64 = previous_screenshot.image_b64 if previous_screenshot else None
+
+    result = process_screenshot(target.url, previous_b64=previous_b64)
+    if not result:
+        return  # Playwright no disponible o fallo
+
+    screenshot = MonitorScreenshot.objects.create(
+        monitor_check=check,
+        image_b64=result["image_b64"],
+        image_hash=result["image_hash"],
+        diff_pct=result["diff_pct"],
+        is_defacement_alert=result["is_defacement_alert"],
+        width=result["width"],
+        height=result["height"],
+    )
+
+    logger.info(
+        "Screenshot guardado para %s — diff: %.1f%% alert: %s",
+        target.url, result["diff_pct"] or 0, result["is_defacement_alert"],
+    )
+
+    # Broadcast WebSocket si hay alerta o es el primero
+    try:
+        from .tasks import _broadcast_screenshot
+        _broadcast_screenshot(target, screenshot)
+    except Exception:
+        pass
+
+    # Crear MonitorChange si es un posible defacement
+    if result["is_defacement_alert"]:
+        from .models import MonitorChange, ChangeType, ChangeSeverity
+        MonitorChange.objects.create(
+            target=target,
+            monitor_check=check,
+            change_type=ChangeType.CONTENT_CHANGED,
+            severity=ChangeSeverity.HIGH,
+            description=f"Posible DEFACEMENT detectado — {result['diff_pct']:.1f}% de la página cambió visualmente",
+            old_value=previous_screenshot.image_hash if previous_screenshot else "",
+            new_value=result["image_hash"],
+        )
+
+
+def _update_subdomains(target, results: list[dict]) -> None:
+    """
+    Sincroniza los resultados del subdomain probe con MonitorSubdomain.
+
+    - Para cada resultado activo: update_or_create → actualiza is_active + last_seen_at.
+    - Subdomains que ya no aparecen (pero existían) → is_active=False.
+    """
+    from .models import MonitorSubdomain
+
+    now = timezone.now()
+    seen_hostnames: set[str] = set()
+
+    for r in results:
+        hostname = r["hostname"]
+        seen_hostnames.add(hostname)
+
+        defaults = {
+            "subdomain":        r["subdomain"],
+            "ip_address":       r.get("ip_address", ""),
+            "is_active":        r["is_active"],
+            "http_status_code": r.get("http_status_code"),
+            "response_time_ms": r.get("response_time_ms"),
+        }
+        if r["is_active"]:
+            defaults["last_seen_at"] = now
+
+        MonitorSubdomain.objects.update_or_create(
+            target=target,
+            hostname=hostname,
+            defaults=defaults,
+        )
+
+    # Marcar como inactivos los que no aparecieron en este scan
+    if seen_hostnames:
+        (
+            MonitorSubdomain.objects
+            .filter(target=target, is_active=True)
+            .exclude(hostname__in=seen_hostnames)
+            .update(is_active=False)
+        )
+
+
+# ── Email alerts ────────────────────────────────────────────────────────────
+
+def _send_alert_email(target, changes: list) -> None:
+    """
+    Envía email al usuario para cambios CRITICAL/HIGH.
+
+    Anti-spam: STATUS_DOWN solo se notifica la primera vez (consecutive_failures == 0).
+    """
+    from django.core.mail import send_mail
+    from django.template.loader import render_to_string
+
+    ALERT_SEVERITIES = {"critical", "high"}
+    alertable = [c for c in changes if c.severity in ALERT_SEVERITIES]
+    if not alertable:
+        return
+
+    # Evitar spam: si el target ya estaba caído, no re-notificar status_down
+    has_down = any(c.change_type == "status_down" for c in alertable)
+    if has_down and target.consecutive_failures > 0:
+        alertable = [c for c in alertable if c.change_type != "status_down"]
+        if not alertable:
+            return
+
+    user = target.user
+    context = {"user": user, "target": target, "changes": alertable}
+
+    subject = render_to_string("email/monitor_alert_subject.txt", context).strip()
+    body    = render_to_string("email/monitor_alert.txt", context)
+
+    send_mail(
+        subject=subject,
+        message=body,
+        from_email=None,
+        recipient_list=[user.email],
+        fail_silently=False,
+    )
+    logger.info(
+        "Monitor alert → %s | target '%s' | %d change(s)",
+        user.email, target.name, len(alertable),
+    )

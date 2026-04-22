@@ -5,8 +5,7 @@
 <!-- Terminal header -->
 <div class="terminal" style="margin-bottom:1.4rem;">
     <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">status</span> <span class="flag">--operator</span> <span class="cmd">{{ user.email }}</span></div>
-    <div class="output">> Session active. Clearance: <span style="color:var(--green-bright);">{{ user.get_plan_display|upper }}</span></div>
-    <div class="output">> Quota remaining: {{ remaining }} scans this cycle<span class="cursor"></span></div>
+    <div class="output">> Session active. All systems operational.<span class="cursor"></span></div>
 </div>
 
 <!-- Stats -->
@@ -24,10 +23,6 @@
             {% if avg_score %}{{ avg_score }}{% else %}&mdash;{% endif %}
         </div>
         <div class="stat-label">avg score</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-value">{{ remaining }}</div>
-        <div class="stat-label">quota left</div>
     </div>
 </div>
 

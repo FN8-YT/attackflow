@@ -19,10 +19,7 @@ urlpatterns = [
     ),
 
     # Login/logout: usamos las vistas built-in de Django.
-    # - La template de login vive en templates/registration/login.html
-    #   (es la ruta por defecto que busca LoginView).
-    # - Forzamos nuestro EmailAuthenticationForm para que la etiqueta
-    #   diga "Email" en lugar de "Username".
+    # EmailAuthenticationForm solo renombra la etiqueta a "Email".
     path(
         "accounts/login/",
         auth_views.LoginView.as_view(
@@ -37,7 +34,7 @@ urlpatterns = [
         name="logout",
     ),
 
-    # Rutas propias de la app users (register, dashboard, ...).
+    # Rutas propias de la app users (register, dashboard).
     path("accounts/", include("apps.users.urls")),
 
     # Auditorías

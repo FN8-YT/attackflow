@@ -12,8 +12,6 @@ from __future__ import annotations
 
 from django import forms
 from django.contrib.auth.forms import AuthenticationForm, UserCreationForm
-from django.core.exceptions import ValidationError
-from django.utils.translation import gettext_lazy as _
 
 from .models import User
 
@@ -31,7 +29,6 @@ class RegistrationForm(UserCreationForm):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        # Un par de ajustes cosméticos y de accesibilidad.
         self.fields["email"].widget.attrs.update(
             {"autofocus": True, "autocomplete": "email"}
         )
@@ -42,29 +39,10 @@ class RegistrationForm(UserCreationForm):
 class EmailAuthenticationForm(AuthenticationForm):
     """
     AuthenticationForm por defecto etiqueta el campo como "Username".
-    Como nosotros identificamos por email, lo renombramos visualmente.
-    La lógica de validación no cambia: usa USERNAME_FIELD del modelo.
-
-    confirm_login_allowed: bloquea el login de usuarios no verificados
-    con un mensaje que incluye el enlace de reenvío, antes de que Django
-    emita la sesión — la primera línea de defensa.
+    Lo renombramos a "Email" para que coincida con nuestro modelo.
     """
 
     username = forms.EmailField(
         label="Email",
         widget=forms.EmailInput(attrs={"autofocus": True, "autocomplete": "email"}),
     )
-
-    def confirm_login_allowed(self, user) -> None:
-        """
-        Hook de AuthenticationForm: lanza ValidationError si el usuario
-        no debe poder iniciar sesión.
-        Llamado DESPUÉS de validar credenciales, ANTES de crear la sesión.
-
-        IMPORTANTE: NO bloqueamos aquí a usuarios no verificados.
-        Si lo hiciéramos, django-axes contaría cada intento como fallo
-        de contraseña y los bloquearía por fuerza bruta incorrectamente.
-        El EmailVerificationMiddleware ya intercepta la request post-login
-        y redirige a verify_pending — es la capa correcta para este control.
-        """
-        super().confirm_login_allowed(user)  # solo comprueba is_active

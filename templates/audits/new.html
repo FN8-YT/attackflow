@@ -5,8 +5,7 @@
 <!-- Terminal header -->
 <div class="terminal" style="margin-bottom:1.4rem;">
     <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">scan</span> <span class="flag">--init --target</span> <span class="cmd">&lt;pending&gt;</span></div>
-    <div class="output">> Quota remaining: <span style="color:var(--green-bright);">{{ remaining }}</span> scans this cycle</div>
-    <div class="output">> Awaiting target parameters...<span class="cursor"></span></div>
+    <div class="output">> All modules unlocked. Awaiting target parameters...<span class="cursor"></span></div>
 </div>
 
 <form method="post" novalidate id="scan-form">
@@ -43,14 +42,14 @@
 
         <div class="module-grid">
             {% for scanner in scanner_data %}
-            <label class="module-item {% if not scanner.available %}module-locked{% endif %}"
+            <label class="module-item {% if scanner.active_only %}module-active-only{% endif %}"
                    data-tier="{{ scanner.tier }}">
                 <div class="module-check">
                     <input type="checkbox"
                            name="selected_scanners"
                            value="{{ scanner.key }}"
-                           {% if scanner.default and scanner.available %}checked{% endif %}
-                           {% if not scanner.available %}disabled{% endif %}
+                           {% if scanner.default %}checked{% endif %}
+                           {% if scanner.active_only %}disabled{% endif %}
                            class="module-checkbox">
                     <span class="module-indicator"></span>
                 </div>
@@ -58,15 +57,13 @@
                     <div class="module-label">
                         <span class="module-icon">{{ scanner.icon }}</span>
                         {{ scanner.label }}
-                        {% if scanner.tier == "recon" %}
-                            <span class="badge badge-premium" style="margin-left:.3rem; font-size:.55rem;">PREMIUM</span>
-                        {% elif scanner.tier == "active" %}
+                        {% if scanner.tier == "active" %}
                             <span class="badge badge-high" style="margin-left:.3rem; font-size:.55rem;">ACTIVE</span>
                         {% endif %}
                     </div>
                     <div class="module-desc">{{ scanner.description }}</div>
-                    {% if not scanner.available %}
-                    <div class="module-lock-msg">Requires Premium plan</div>
+                    {% if scanner.active_only %}
+                    <div class="module-lock-msg" style="color:var(--text-muted);">Requires active scan mode</div>
                     {% endif %}
                 </div>
             </label>
@@ -93,24 +90,14 @@
 
     <div class="muted" style="margin-top:1rem; line-height:1.8; font-size:.82rem;">
         > Scan executes asynchronously via Celery worker.<br>
-        > Only selected modules will run. You will be redirected to a live status feed.
+        > Active-mode modules unlock automatically when you select "Active" scan mode.
     </div>
-
-    {% if not has_advanced %}
-    <div style="margin-top:.6rem; padding:.5rem .7rem; border:1px solid var(--chrome-border); background:var(--chrome);border-radius:var(--radius);">
-        <span class="muted" style="font-size:.82rem;">
-            > Locked modules require PREMIUM clearance.<br>
-            > <a href="{% url 'users:plans' %}">Request upgrade</a>
-        </span>
-    </div>
-    {% endif %}
 </form>
 
 <script>
 (function(){
     // Module counter
     function updateCounter(){
-        var checks = document.querySelectorAll('.module-checkbox:not(:disabled)');
         var checked = document.querySelectorAll('.module-checkbox:not(:disabled):checked');
         var counter = document.getElementById('module-counter');
         if(counter) counter.textContent = checked.length + ' / {{ scanner_data|length }}';
@@ -131,10 +118,7 @@
         updateCounter();
     });
     document.getElementById('btn-defaults').addEventListener('click', function(){
-        document.querySelectorAll('.module-checkbox:not(:disabled)').forEach(function(cb){
-            // Defaults: check all available
-            cb.checked = true;
-        });
+        document.querySelectorAll('.module-checkbox:not(:disabled)').forEach(function(cb){ cb.checked = true; });
         updateCounter();
     });
 
@@ -144,19 +128,25 @@
         function toggleActiveModules(){
             var isActive = modeSelect.value === 'active';
             document.querySelectorAll('.module-item[data-tier="active"]').forEach(function(el){
+                var cb = el.querySelector('.module-checkbox');
+                var lockMsg = el.querySelector('.module-lock-msg');
                 if(isActive){
-                    el.classList.remove('module-locked');
-                    el.querySelector('.module-checkbox').disabled = false;
+                    el.classList.remove('module-active-only');
+                    cb.disabled = false;
+                    cb.checked = true;
+                    if(lockMsg) lockMsg.style.display = 'none';
                 } else {
-                    el.classList.add('module-locked');
-                    var cb = el.querySelector('.module-checkbox');
+                    el.classList.add('module-active-only');
                     cb.disabled = true;
                     cb.checked = false;
+                    if(lockMsg) lockMsg.style.display = '';
                 }
             });
             updateCounter();
         }
         modeSelect.addEventListener('change', toggleActiveModules);
+        // Run on load to sync with initial value
+        toggleActiveModules();
     }
 })();
 </script>

@@ -2,31 +2,39 @@
 {% block title %}Monitoring — AttackFlow{% endblock %}
 
 {% block content %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+@keyframes livePulse {
+    0%,100% { opacity:1; }
+    50%      { opacity:.45; }
+}
+</style>
+
 <!-- Terminal header -->
-<div class="terminal" style="margin-bottom:1.4rem;">
-    <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">monitor</span> <span class="flag">--list</span> <span class="flag">--watch</span></div>
-    <div class="output">> Continuous Monitoring // {{ targets.count }} target(s) active</div>
-    <div class="output">> Changes last 24h: <span style="color:{% if recent_changes %}var(--orange){% else %}var(--green){% endif %};">{{ recent_changes|length }}</span><span class="cursor"></span></div>
+<div class="terminal" style="margin-bottom:1.2rem;">
+    <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">monitor</span> <span class="flag">--list</span> <span class="flag">--watch</span> <span class="flag">--security</span></div>
+    <div class="output">> Continuous Monitoring // {{ targets|length }} target(s) tracked</div>
+    <div class="output">> Changes 24h: <span style="color:{% if recent_changes %}var(--orange){% else %}var(--green){% endif %};">{{ recent_changes|length }}</span><span class="cursor"></span></div>
 </div>
 
 <!-- Stats bar -->
-<div class="stats" style="margin-bottom:1.4rem;">
+<div class="stats" style="margin-bottom:1.2rem;">
     <div class="stat-card">
-        <div class="stat-val" style="color:var(--green-bright);">
-            {% for t in targets %}{% if t.current_status == 'up' %}{% with 1 as x %}{% endwith %}{% endif %}{% endfor %}
-            {{ targets|length }}
-        </div>
-        <div class="stat-label">total targets</div>
+        <div class="stat-val" style="color:var(--green-bright);">{{ targets|length }}</div>
+        <div class="stat-label">targets</div>
     </div>
     <div class="stat-card">
         <div class="stat-val" style="color:var(--green-bright);" id="stat-up">
-            {% for t in targets %}{% if t.current_status == 'up' %}{{ forloop.counter0|add:1 }}{% endif %}{% endfor %}0
+            {% with up_count=0 %}
+            {% for t in targets %}{% if t.current_status == 'up' %}<span data-up="1"></span>{% endif %}{% endfor %}
+            <span id="stat-up-val">{% for t in targets %}{% if t.current_status == 'up' %}{{ forloop.counter }}{% endif %}{% endfor %}</span>
+            {% endwith %}
         </div>
         <div class="stat-label">online</div>
     </div>
     <div class="stat-card">
-        <div class="stat-val" style="color:var(--red);" id="stat-down">
-            {% for t in targets %}{% if t.current_status == 'down' %}{{ forloop.counter0|add:1 }}{% endif %}{% endfor %}0
+        <div class="stat-val" style="color:var(--red);">
+            <span id="stat-down-val">{% for t in targets %}{% if t.current_status == 'down' %}{{ forloop.counter }}{% endif %}{% endfor %}</span>
         </div>
         <div class="stat-label">offline</div>
     </div>
@@ -34,158 +42,204 @@
         <div class="stat-val" style="color:var(--orange);">{{ recent_changes|length }}</div>
         <div class="stat-label">changes 24h</div>
     </div>
-    <div class="stat-card">
-        <div class="stat-val" style="color:var(--xp-blue);">{{ used }}/{{ target_limit }}</div>
-        <div class="stat-label">target quota</div>
-    </div>
 </div>
 
-<div style="display:grid;grid-template-columns:1fr 340px;gap:1.2rem;align-items:start;">
+<div style="display:grid;grid-template-columns:1fr 320px;gap:1.2rem;align-items:start;">
 
-<!-- ── Left: targets grid ─── -->
+<!-- ── LEFT: targets ──────────────────────────────────────────────── -->
 <div>
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.8rem;">
-        <div style="color:var(--green);font-size:.75rem;letter-spacing:.1em;font-weight:600;">MONITORED TARGETS</div>
-        {% if can_add %}
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.7rem;">
+        <span style="color:var(--green);font-size:.72rem;letter-spacing:.1em;font-weight:600;">MONITORED TARGETS</span>
         <a href="{% url 'monitoring:add' %}" class="btn btn-primary btn-sm">+ add target</a>
-        {% else %}
-        <span style="color:var(--text-gray);font-size:.7rem;">limit reached — <a href="{% url 'users:plans' %}" style="color:var(--xp-blue);">upgrade</a></span>
-        {% endif %}
     </div>
 
     {% if targets %}
-    <div style="display:flex;flex-direction:column;gap:.7rem;">
-        {% for target in targets %}
-        <div class="card" id="target-card-{{ target.pk }}"
-             style="border-color:{% if target.current_status == 'up' %}rgba(26,173,23,.3){% elif target.current_status == 'down' %}rgba(220,50,50,.35){% elif target.current_status == 'error' %}rgba(204,136,0,.3){% else %}var(--chrome-border){% endif %};transition:border-color .4s;">
-            <div style="display:flex;align-items:center;gap:.8rem;">
+    <div style="display:flex;flex-direction:column;gap:.6rem;">
+    {% for target in targets %}
+    {% with spk=sparklines_json %}
+    <div class="card" id="target-card-{{ target.pk }}"
+         style="border-color:{% if target.current_status == 'up' %}rgba(26,173,23,.3){% elif target.current_status == 'down' %}rgba(220,50,50,.35){% elif target.current_status == 'error' %}rgba(204,136,0,.3){% else %}var(--chrome-border){% endif %};transition:border-color .4s;">
 
-                <!-- Status dot -->
-                <div style="width:10px;height:10px;border-radius:50%;flex-shrink:0;
-                    background:{% if target.current_status == 'up' %}var(--green-bright){% elif target.current_status == 'down' %}#e03232{% elif target.current_status == 'error' %}#cc8800{% else %}var(--gray-dim){% endif %};
-                    box-shadow:{% if target.current_status == 'up' %}0 0 6px var(--green-bright){% elif target.current_status == 'down' %}0 0 6px #e03232{% else %}none{% endif %};"
-                     id="dot-{{ target.pk }}">
-                </div>
+        <!-- Row 1: status + name + metrics + actions -->
+        <div style="display:flex;align-items:center;gap:.7rem;">
 
-                <!-- Name + URL -->
-                <div style="flex:1;min-width:0;">
+            <!-- Status dot -->
+            <div style="width:9px;height:9px;border-radius:50%;flex-shrink:0;
+                background:{% if target.current_status == 'up' %}var(--green-bright){% elif target.current_status == 'down' %}#e03232{% elif target.current_status == 'error' %}#cc8800{% else %}var(--gray-dim){% endif %};
+                box-shadow:{% if target.current_status == 'up' %}0 0 6px var(--green-bright){% elif target.current_status == 'down' %}0 0 6px #e03232{% else %}none{% endif %};"
+                 id="dot-{{ target.pk }}">
+            </div>
+
+            <!-- Name + URL + tech badges -->
+            <div style="flex:1;min-width:0;">
+                <div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;">
                     <a href="{% url 'monitoring:detail' target.pk %}"
-                       style="color:var(--green-bright);font-size:.85rem;font-weight:600;text-decoration:none;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                       style="color:var(--green-bright);font-size:.83rem;font-weight:600;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;">
                         {{ target.name }}
                     </a>
-                    <div style="color:var(--text-gray);font-size:.68rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                        {{ target.url }}
-                    </div>
-                </div>
-
-                <!-- Metrics -->
-                <div style="display:flex;gap:1rem;flex-shrink:0;text-align:right;">
-                    <div>
-                        <div style="color:var(--gray);font-size:.6rem;letter-spacing:.08em;margin-bottom:.1rem;">UPTIME</div>
-                        <div style="font-size:.78rem;font-weight:600;color:{% if target.uptime_pct and target.uptime_pct >= 99 %}var(--green-bright){% elif target.uptime_pct and target.uptime_pct >= 90 %}var(--orange){% else %}var(--text-gray){% endif %};">
-                            {% if target.uptime_pct %}{{ target.uptime_pct }}%{% else %}—{% endif %}
-                        </div>
-                    </div>
-                    <div>
-                        <div style="color:var(--gray);font-size:.6rem;letter-spacing:.08em;margin-bottom:.1rem;">RESP</div>
-                        <div style="font-size:.78rem;font-weight:600;color:{% if target.last_response_ms and target.last_response_ms > 3000 %}var(--red){% elif target.last_response_ms and target.last_response_ms > 1000 %}var(--orange){% else %}var(--green-bright){% endif %};">
-                            {% if target.last_response_ms %}{{ target.last_response_ms }}ms{% else %}—{% endif %}
-                        </div>
-                    </div>
-                    <div>
-                        <div style="color:var(--gray);font-size:.6rem;letter-spacing:.08em;margin-bottom:.1rem;">SSL</div>
-                        <div style="font-size:.78rem;font-weight:600;color:{% if target.last_ssl_days and target.last_ssl_days <= 7 %}var(--red){% elif target.last_ssl_days and target.last_ssl_days <= 30 %}var(--orange){% else %}var(--green-bright){% endif %};">
-                            {% if target.last_ssl_days %}{{ target.last_ssl_days }}d{% else %}—{% endif %}
-                        </div>
-                    </div>
-                    <div>
-                        <div style="color:var(--gray);font-size:.6rem;letter-spacing:.08em;margin-bottom:.1rem;">CHANGES</div>
-                        <div style="font-size:.78rem;font-weight:600;color:{% if target.recent_changes_count > 0 %}var(--orange){% else %}var(--text-gray){% endif %};">
-                            {{ target.recent_changes_count }}
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Interval badge -->
-                <div style="flex-shrink:0;">
-                    <span style="background:var(--chrome);border:1px solid var(--chrome-border);color:var(--text-gray);font-size:.6rem;padding:.15rem .4rem;letter-spacing:.06em;">
-                        every {{ target.check_interval }}m
+                    <!-- Live badge -->
+                    {% if target.is_live %}
+                    <span style="font-size:.55rem;padding:.08rem .28rem;font-weight:700;letter-spacing:.06em;
+                        color:var(--green-bright);background:rgba(26,173,23,.15);border:1px solid rgba(26,173,23,.4);
+                        animation:livePulse 1.5s ease-in-out infinite;">⚡ LIVE</span>
+                    {% endif %}
+                    <!-- Security score badge -->
+                    {% if target.last_security_score is not None %}
+                    <span style="font-size:.58rem;padding:.1rem .35rem;font-weight:700;letter-spacing:.06em;border:1px solid;
+                        {% if target.last_security_score >= 90 %}color:var(--green-bright);border-color:rgba(26,173,23,.4);background:rgba(26,173,23,.1);
+                        {% elif target.last_security_score >= 75 %}color:var(--green);border-color:rgba(26,173,23,.25);background:rgba(26,173,23,.07);
+                        {% elif target.last_security_score >= 60 %}color:var(--orange);border-color:rgba(204,136,0,.4);background:rgba(204,136,0,.1);
+                        {% elif target.last_security_score >= 40 %}color:#e07000;border-color:rgba(224,112,0,.4);background:rgba(224,112,0,.1);
+                        {% else %}color:var(--red);border-color:rgba(220,50,50,.4);background:rgba(220,50,50,.1);{% endif %}">
+                        {{ target.security_grade }} {{ target.last_security_score }}
                     </span>
+                    {% endif %}
+                    <!-- WAF badge -->
+                    {% if target.last_waf %}
+                    <span style="font-size:.55rem;padding:.1rem .3rem;color:var(--xp-blue);border:1px solid rgba(100,160,255,.3);background:rgba(100,160,255,.07);letter-spacing:.04em;">
+                        {{ target.last_waf }}
+                    </span>
+                    {% endif %}
                 </div>
+                <div style="color:var(--text-gray);font-size:.65rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.1rem;">
+                    {{ target.url }}
+                </div>
+                <!-- Tech stack micro-badges -->
+                {% if target.last_technologies %}
+                <div style="display:flex;gap:.2rem;flex-wrap:wrap;margin-top:.25rem;">
+                    {% for tech in target.last_technologies|slice:":5" %}
+                    <span style="font-size:.52rem;color:var(--text-gray);background:var(--chrome);border:1px solid var(--chrome-border);padding:.05rem .25rem;letter-spacing:.03em;">{{ tech }}</span>
+                    {% endfor %}
+                    {% if target.last_technologies|length > 5 %}
+                    <span style="font-size:.52rem;color:var(--gray-dim);">+{{ target.last_technologies|length|add:"-5" }} more</span>
+                    {% endif %}
+                </div>
+                {% endif %}
+            </div>
 
-                <!-- Actions -->
-                <div style="flex-shrink:0;display:flex;gap:.3rem;">
-                    <a href="{% url 'monitoring:detail' target.pk %}" class="btn btn-ghost btn-sm">view</a>
-                    <form method="post" action="{% url 'monitoring:run_now' target.pk %}" style="display:inline;">
-                        {% csrf_token %}
-                        <button class="btn btn-ghost btn-sm" type="submit" title="Check now">▶</button>
-                    </form>
-                    <form method="post" action="{% url 'monitoring:toggle' target.pk %}" style="display:inline;">
-                        {% csrf_token %}
-                        <button class="btn btn-ghost btn-sm" type="submit" title="{% if target.is_active %}Pause{% else %}Resume{% endif %}">
-                            {% if target.is_active %}⏸{% else %}▶{% endif %}
-                        </button>
-                    </form>
+            <!-- Sparkline chart -->
+            <div style="flex-shrink:0;width:80px;height:32px;">
+                <canvas id="spark-{{ target.pk }}" width="80" height="32"></canvas>
+            </div>
+
+            <!-- Metrics -->
+            <div style="display:flex;gap:.8rem;flex-shrink:0;text-align:right;">
+                <div>
+                    <div style="color:var(--gray);font-size:.56rem;letter-spacing:.07em;margin-bottom:.05rem;">UPTIME</div>
+                    <div style="font-size:.75rem;font-weight:600;
+                        color:{% if target.uptime_pct and target.uptime_pct >= 99 %}var(--green-bright){% elif target.uptime_pct and target.uptime_pct >= 90 %}var(--orange){% else %}var(--text-gray){% endif %};">
+                        {% if target.uptime_pct %}{{ target.uptime_pct }}%{% else %}—{% endif %}
+                    </div>
+                </div>
+                <div>
+                    <div style="color:var(--gray);font-size:.56rem;letter-spacing:.07em;margin-bottom:.05rem;">RESP</div>
+                    <div style="font-size:.75rem;font-weight:600;
+                        color:{% if target.last_response_ms and target.last_response_ms > 3000 %}var(--red){% elif target.last_response_ms and target.last_response_ms > 1000 %}var(--orange){% else %}var(--green-bright){% endif %};">
+                        {% if target.last_response_ms %}{{ target.last_response_ms }}ms{% else %}—{% endif %}
+                    </div>
+                </div>
+                <div>
+                    <div style="color:var(--gray);font-size:.56rem;letter-spacing:.07em;margin-bottom:.05rem;">SSL</div>
+                    <div style="font-size:.75rem;font-weight:600;
+                        color:{% if target.last_ssl_days and target.last_ssl_days <= 7 %}var(--red){% elif target.last_ssl_days and target.last_ssl_days <= 30 %}var(--orange){% else %}var(--green-bright){% endif %};">
+                        {% if target.last_ssl_days %}{{ target.last_ssl_days }}d{% else %}—{% endif %}
+                    </div>
                 </div>
             </div>
 
-            <!-- Last check info -->
-            <div style="margin-top:.5rem;padding-top:.5rem;border-top:1px solid var(--chrome-border);display:flex;gap:1rem;font-size:.65rem;color:var(--text-gray);">
-                <span>last check: {% if target.last_check_at %}{{ target.last_check_at|date:"d/m H:i:s" }}{% else %}<em>never</em>{% endif %}</span>
-                {% if target.last_http_status %}<span>HTTP {{ target.last_http_status }}</span>{% endif %}
-                {% if target.consecutive_failures > 0 %}<span style="color:var(--red);">{{ target.consecutive_failures }} consecutive fail(s)</span>{% endif %}
-                {% if not target.is_active %}<span style="color:var(--gray-dim);">[PAUSED]</span>{% endif %}
+            <!-- Actions -->
+            <div style="flex-shrink:0;display:flex;gap:.25rem;">
+                <a href="{% url 'monitoring:detail' target.pk %}" class="btn btn-ghost btn-sm" style="font-size:.6rem;">view</a>
+                <form method="post" action="{% url 'monitoring:run_now' target.pk %}" style="display:inline;">
+                    {% csrf_token %}
+                    <button class="btn btn-ghost btn-sm" type="submit" title="Run check now" style="font-size:.65rem;">▶</button>
+                </form>
+                <button class="btn btn-ghost btn-sm dash-toggle"
+                    data-target-id="{{ target.pk }}"
+                    data-toggle-url="{% url 'monitoring:toggle' target.pk %}"
+                    data-active="{{ target.is_active|yesno:'1,0' }}"
+                    title="{% if target.is_active %}Pause{% else %}Resume{% endif %}"
+                    style="font-size:.65rem;{% if not target.is_active %}color:var(--orange);{% endif %}"
+                    id="toggle-btn-{{ target.pk }}">
+                    {% if target.is_active %}⏸{% else %}▶{% endif %}
+                </button>
             </div>
         </div>
-        {% endfor %}
+
+        <!-- Row 2: meta info -->
+        <div style="margin-top:.4rem;padding-top:.4rem;border-top:1px solid var(--chrome-border);display:flex;gap:.8rem;font-size:.62rem;color:var(--text-gray);flex-wrap:wrap;">
+            <span>last: {% if target.last_check_at %}{{ target.last_check_at|date:"d/m H:i:s" }}{% else %}<em>never</em>{% endif %}</span>
+            {% if target.last_http_status %}<span>HTTP {{ target.last_http_status }}</span>{% endif %}
+            {% if target.is_live %}
+            <span style="color:var(--green-bright);font-weight:600;">⚡ live / {{ target.interval_display }}</span>
+            {% else %}
+            <span style="color:var(--gray);">every {{ target.interval_display }}</span>
+            {% endif %}
+            {% if target.consecutive_failures > 0 %}
+            <span style="color:var(--red);">{{ target.consecutive_failures }} consecutive fail(s)</span>
+            {% endif %}
+            {% if not target.is_active %}<span style="color:var(--gray-dim);">[PAUSED]</span>{% endif %}
+        </div>
+    </div>
+    {% endwith %}
+    {% endfor %}
     </div>
 
     {% else %}
-    <!-- Empty state -->
     <div class="card" style="text-align:center;padding:3rem 1rem;">
         <div style="font-size:2rem;margin-bottom:.8rem;opacity:.3;">◎</div>
         <div style="color:var(--green);font-size:.8rem;margin-bottom:.4rem;">no targets configured</div>
         <div style="color:var(--text-gray);font-size:.72rem;margin-bottom:1.2rem;">
-            Añade tu primer objetivo para empezar a monitorizar uptime, headers y certificados SSL.
+            Añade tu primer objetivo para monitorizar uptime, headers de seguridad,<br>
+            tecnologías, WAF, certificados SSL y superficie de ataque expuesta.
         </div>
         <a href="{% url 'monitoring:add' %}" class="btn btn-primary">+ add first target</a>
     </div>
     {% endif %}
 </div>
 
-<!-- ── Right: changes feed ─── -->
+<!-- ── RIGHT: change feed ──────────────────────────────────────────── -->
 <div>
     <div class="sys-widget">
         <div class="sys-widget-header">
             <span>change feed / 24h</span>
             <span class="xp-dots"><span class="xp-dot"></span><span class="xp-dot"></span><span class="xp-dot xp-dot-close"></span></span>
         </div>
-        <div class="sys-widget-body" style="max-height:600px;overflow-y:auto;">
+        <div class="sys-widget-body" style="max-height:640px;overflow-y:auto;">
             {% if recent_changes %}
             {% for change in recent_changes %}
-            <div style="padding:.4rem 0;border-bottom:1px solid var(--chrome-border);font-size:.68rem;line-height:1.5;">
-                <div style="display:flex;align-items:center;gap:.4rem;margin-bottom:.15rem;">
-                    <span style="color:
-                        {% if change.severity == 'critical' %}var(--red)
-                        {% elif change.severity == 'high' %}var(--orange)
-                        {% elif change.severity == 'medium' %}#ccaa00
-                        {% elif change.severity == 'low' %}var(--xp-blue)
-                        {% else %}var(--text-gray){% endif %};
-                        font-weight:600;letter-spacing:.05em;font-size:.6rem;text-transform:uppercase;">
-                        {{ change.severity }}
+            <div style="padding:.35rem 0;border-bottom:1px solid var(--chrome-border);font-size:.65rem;line-height:1.5;">
+                <!-- Severity + icon + target -->
+                <div style="display:flex;align-items:center;gap:.35rem;margin-bottom:.1rem;flex-wrap:wrap;">
+                    <span style="font-size:.55rem;font-weight:700;letter-spacing:.05em;padding:.05rem .25rem;
+                        {% if change.severity == 'critical' %}color:#ff4444;background:rgba(255,68,68,.12);border:1px solid rgba(255,68,68,.3);
+                        {% elif change.severity == 'high' %}color:var(--orange);background:rgba(204,136,0,.12);border:1px solid rgba(204,136,0,.3);
+                        {% elif change.severity == 'medium' %}color:#ccaa00;background:rgba(204,170,0,.1);border:1px solid rgba(204,170,0,.25);
+                        {% elif change.severity == 'low' %}color:var(--xp-blue);background:rgba(100,160,255,.08);border:1px solid rgba(100,160,255,.2);
+                        {% else %}color:var(--text-gray);background:transparent;border:1px solid var(--chrome-border);{% endif %}
+                        text-transform:uppercase;">{{ change.severity }}</span>
+                    <span style="color:var(--gray);">
+                        {% if change.change_type == 'status_down' %}🔴
+                        {% elif change.change_type == 'status_up' %}🟢
+                        {% elif change.change_type == 'sensitive_path' %}🎯
+                        {% elif change.change_type == 'tech_added' or change.change_type == 'tech_removed' %}⚙
+                        {% elif change.change_type == 'waf_appeared' or change.change_type == 'waf_gone' %}🛡
+                        {% elif change.change_type == 'header_removed' %}🔓
+                        {% elif change.change_type == 'ssl_expiry_warn' %}⏳
+                        {% elif change.change_type == 'score_drop' %}📉
+                        {% else %}●{% endif %}
                     </span>
-                    <span style="color:var(--text-gray);">·</span>
-                    <a href="{% url 'monitoring:detail' change.target.pk %}" style="color:var(--green);text-decoration:none;">
-                        {{ change.target.name|truncatechars:22 }}
+                    <a href="{% url 'monitoring:detail' change.target.pk %}" style="color:var(--green);text-decoration:none;font-weight:600;">
+                        {{ change.target.name|truncatechars:18 }}
                     </a>
                 </div>
-                <div style="color:var(--text-dim);">{{ change.description|truncatechars:80 }}</div>
-                <div style="color:var(--gray-dim);font-size:.6rem;margin-top:.1rem;">{{ change.created_at|date:"d/m H:i" }}</div>
+                <div style="color:var(--text-dim);">{{ change.description|truncatechars:72 }}</div>
+                <div style="color:var(--gray-dim);font-size:.58rem;margin-top:.05rem;">{{ change.created_at|date:"d/m H:i" }}</div>
             </div>
             {% endfor %}
             {% else %}
-            <div style="color:var(--text-gray);font-size:.7rem;padding:.5rem 0;text-align:center;opacity:.6;">
-                no changes detected in the last 24h
+            <div style="color:var(--text-gray);font-size:.7rem;padding:1rem 0;text-align:center;opacity:.6;">
+                no changes in the last 24h
             </div>
             {% endif %}
         </div>
@@ -195,28 +249,156 @@
 </div><!-- /grid -->
 
 <script>
-// Live status update via polling (every 30s)
-const TARGET_IDS = [{% for t in targets %}{{ t.pk }}{% if not forloop.last %},{% endif %}{% endfor %}];
-const STATUS_COLORS = { up:'rgba(26,173,23,.3)', down:'rgba(220,50,50,.35)', error:'rgba(204,136,0,.3)', unknown:'var(--chrome-border)' };
-const DOT_COLORS   = { up:'var(--green-bright)', down:'#e03232', error:'#cc8800', unknown:'var(--gray-dim)' };
-const DOT_SHADOWS  = { up:'0 0 6px var(--green-bright)', down:'0 0 6px #e03232', error:'none', unknown:'none' };
+const DASHBOARD_CSRF = '{{ csrf_token }}';
+(function(){
+    // ── Sparklines ──────────────────────────────────────────────────────
+    const SPARKLINES = {{ sparklines_json|safe }};
 
-async function pollTarget(id) {
-    try {
-        const r = await fetch(`/monitoring/${id}/status.json/`);
-        if (!r.ok) return;
-        const d = await r.json();
-        const card = document.getElementById(`target-card-${id}`);
-        const dot  = document.getElementById(`dot-${id}`);
-        if (card) card.style.borderColor = STATUS_COLORS[d.current_status] || STATUS_COLORS.unknown;
-        if (dot) {
-            dot.style.background  = DOT_COLORS[d.current_status]  || DOT_COLORS.unknown;
-            dot.style.boxShadow   = DOT_SHADOWS[d.current_status] || DOT_SHADOWS.unknown;
+    function statusColor(status) {
+        return {up:'#1aad17', down:'#e03232', error:'#cc8800'}[status] || '#666';
+    }
+
+    Object.entries(SPARKLINES).forEach(([pk, checks]) => {
+        const canvas = document.getElementById('spark-' + pk);
+        if (!canvas || !checks.length) return;
+
+        const labels = checks.map((_, i) => i);
+        const data   = checks.map(c => c.ms || 0);
+        const colors = checks.map(c => statusColor(c.status));
+
+        new Chart(canvas, {
+            type: 'bar',
+            data: {
+                labels,
+                datasets: [{
+                    data,
+                    backgroundColor: colors,
+                    borderWidth: 0,
+                    borderRadius: 1,
+                }]
+            },
+            options: {
+                responsive: false,
+                animation: false,
+                plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                scales: {
+                    x: { display: false },
+                    y: { display: false, beginAtZero: true },
+                },
+            }
+        });
+    });
+
+    // ── WebSocket — actualizaciones en tiempo real del dashboard ────────
+    const WS_SCHEME = location.protocol === 'https:' ? 'wss' : 'ws';
+    let dashWs = null, dashWsReconn = null;
+
+    function setupDashWs() {
+        if (dashWs && dashWs.readyState < 2) return;
+        clearTimeout(dashWsReconn);
+        dashWs = new WebSocket(`${WS_SCHEME}://${location.host}/ws/monitoring/dashboard/`);
+
+        dashWs.onmessage = (evt) => {
+            try {
+                const msg = JSON.parse(evt.data);
+                // DashboardConsumer usa **event["data"] → campos al nivel raíz
+                if (msg.type === 'check_update') {
+                    const st = msg.status || 'unknown';
+                    const card = document.getElementById(`target-card-${msg.target_id}`);
+                    const dot  = document.getElementById(`dot-${msg.target_id}`);
+                    if (card) card.style.borderColor = CARD_BORDERS[st] || CARD_BORDERS.unknown;
+                    if (dot)  {
+                        dot.style.background = DOT_BG[st]  || DOT_BG.unknown;
+                        dot.style.boxShadow  = DOT_SH[st]  || DOT_SH.unknown;
+                    }
+                }
+            } catch(e) {}
+        };
+
+        dashWs.onclose = (evt) => {
+            dashWs = null;
+            if (evt.code !== 1000) dashWsReconn = setTimeout(setupDashWs, 5000);
+        };
+    }
+
+    // Intentar WS solo si hay targets
+    if ({{ targets|length }} > 0) setupDashWs();
+
+    // ── Live status polling (fallback + complemento a WS) ───────────────
+    // Targets con intervalo live (≤60s) se sondean cada 5s,
+    // el resto cada 30s.
+    const TARGETS_ALL = [
+        {% for t in targets %}
+        { id: {{ t.pk }}, live: {{ t.is_live|yesno:"true,false" }}, interval: {{ t.check_interval }} }{% if not forloop.last %},{% endif %}
+        {% endfor %}
+    ];
+
+    const CARD_BORDERS = {
+        up:'rgba(26,173,23,.3)', down:'rgba(220,50,50,.35)',
+        error:'rgba(204,136,0,.3)', unknown:'var(--chrome-border)'
+    };
+    const DOT_BG = { up:'var(--green-bright)', down:'#e03232', error:'#cc8800', unknown:'var(--gray-dim)' };
+    const DOT_SH = { up:'0 0 6px var(--green-bright)', down:'0 0 6px #e03232', error:'none', unknown:'none' };
+
+    async function pollTarget(id) {
+        try {
+            const r = await fetch(`/monitoring/${id}/status.json/`);
+            if (!r.ok) return;
+            const d = await r.json();
+            const card = document.getElementById(`target-card-${id}`);
+            const dot  = document.getElementById(`dot-${id}`);
+            if (card) card.style.borderColor = CARD_BORDERS[d.current_status] || CARD_BORDERS.unknown;
+            if (dot) {
+                dot.style.background = DOT_BG[d.current_status]  || DOT_BG.unknown;
+                dot.style.boxShadow  = DOT_SH[d.current_status]  || DOT_SH.unknown;
+            }
+        } catch(e) {}
+    }
+
+    if (TARGETS_ALL.length) {
+        const liveTargets = TARGETS_ALL.filter(t => t.live).map(t => t.id);
+        if (liveTargets.length) {
+            setInterval(() => liveTargets.forEach(pollTarget), 5000);
         }
-    } catch(e) { /* silent */ }
-}
+        const allIds = TARGETS_ALL.map(t => t.id);
+        setInterval(() => allIds.forEach(pollTarget), 30000);
+    }
 
-function pollAll() { TARGET_IDS.forEach(pollTarget); }
-if (TARGET_IDS.length) setInterval(pollAll, 30000);
+    // ── AJAX Toggle (Pause / Resume) ────────────────────────────────────
+    document.querySelectorAll('.dash-toggle').forEach(btn => {
+        btn.addEventListener('click', async function() {
+            const url = this.dataset.toggleUrl;
+            const id  = this.dataset.targetId;
+            try {
+                const r = await fetch(url, {
+                    method:  'POST',
+                    headers: { 'X-CSRFToken': DASHBOARD_CSRF, 'X-Requested-With': 'XMLHttpRequest' },
+                });
+                const d = await r.json();
+
+                // Update button
+                this.textContent = d.is_active ? '⏸' : '▶';
+                this.style.color = d.is_active ? '' : 'var(--orange)';
+                this.title       = d.is_active ? 'Pause' : 'Resume';
+                this.dataset.active = d.is_active ? '1' : '0';
+
+                // Update paused badge in meta row
+                const card     = document.getElementById(`target-card-${id}`);
+                const metaRow  = card && card.querySelector('[data-meta-row]');
+                // Update border color immediately
+                if (card && !d.is_active) {
+                    card.style.borderColor = 'var(--chrome-border)';
+                } else if (card && d.is_active) {
+                    pollTarget(parseInt(id));
+                }
+
+                // Flash feedback
+                this.style.background = d.is_active ? 'rgba(26,173,23,.08)' : 'rgba(204,136,0,.1)';
+                setTimeout(() => this.style.background = '', 1200);
+
+            } catch(e) { console.error('Toggle failed', e); }
+        });
+    });
+})();
 </script>
 {% endblock %}

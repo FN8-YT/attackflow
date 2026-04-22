@@ -53,10 +53,9 @@ def run_audit(audit: Audit) -> None:
     context = ScanContext(target=target)
     _prefetch_http(context)
 
-    # Seleccionar scanners según modo, plan y selección del usuario.
-    has_advanced = audit.user.has_feature("advanced_scanners")
+    # Seleccionar scanners según modo y selección del usuario.
     selected_keys = audit.selected_scanners or None
-    scanners = get_scanners_for_audit(audit.scan_mode, has_advanced, selected_keys)
+    scanners = get_scanners_for_audit(audit.scan_mode, selected_keys)
 
     all_findings = []
     raw_bundle: dict = {}

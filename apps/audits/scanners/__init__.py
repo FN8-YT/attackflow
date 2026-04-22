@@ -5,11 +5,15 @@ Cada scanner implementa BaseScanner y se registra en SCANNER_REGISTRY,
 que contiene la metadata para el UI (label, descripción, tier, default).
 
 Tiers:
-- base: siempre disponible, todos los planes (incluye recon pasivo).
-- active: envía payloads de prueba, modo active + plan premium+.
+- base:   siempre disponible, cualquier modo de escaneo.
+- active: envía payloads de prueba, requiere modo de escaneo 'active'.
+
+No existe gating por plan: todos los scanners son accesibles para
+cualquier usuario autenticado. El único requisito para los scanners
+de tier 'active' es seleccionar el modo de escaneo activo.
 
 El orquestador y el formulario usan get_available_scanners() y
-get_scanners_for_audit() para selección basada en plan + elección del usuario.
+get_scanners_for_audit() para selección basada en modo + elección del usuario.
 """
 from __future__ import annotations
 
@@ -43,16 +47,19 @@ from .js_analysis import JSAnalysisScanner
 from .js_secrets import JSSecretsScanner
 from .js_endpoints import JSEndpointsScanner
 
+# Nuclei — vulnerability scanner externo
+from .nuclei_scanner import NucleiScanner
+
 
 # ── Scanner metadata ──────────────────────────────────────────
 @dataclass(frozen=True)
 class ScannerMeta:
-    """Metadata de un scanner para UI, selección y gating."""
+    """Metadata de un scanner para UI y selección."""
 
     key: str                # ID único (coincide con scanner.name)
     label: str              # Nombre legible para el usuario
     description: str        # Descripción corta de qué hace
-    tier: str               # 'base' | 'recon' | 'active'
+    tier: str               # 'base' | 'active'
     default: bool           # ¿Seleccionado por defecto?
     icon: str = ""          # Emoji o símbolo para el UI (opcional)
 
@@ -61,7 +68,7 @@ class ScannerMeta:
 # Orden = orden de ejecución. Cada entrada vincula metadata + instancia.
 
 SCANNER_REGISTRY: list[dict[str, Any]] = [
-    # ── BASE (disponibles para todos) ──────────────────────
+    # ── BASE (disponibles siempre) ─────────────────────────
     {
         "meta": ScannerMeta(
             key="dns",
@@ -117,7 +124,6 @@ SCANNER_REGISTRY: list[dict[str, Any]] = [
         ),
         "instance": PortsScanner(),
     },
-    # ── RECON (pasivo, disponible para todos los planes) ────
     {
         "meta": ScannerMeta(
             key="subdomains",
@@ -140,41 +146,6 @@ SCANNER_REGISTRY: list[dict[str, Any]] = [
         ),
         "instance": TechScanner(),
     },
-    # ── ACTIVE (plan premium+ y modo active) ──────────────
-    {
-        "meta": ScannerMeta(
-            key="xss",
-            label="XSS Detection",
-            description="Detección de Cross-Site Scripting reflejado con payloads canary.",
-            tier="active",
-            default=True,
-            icon="[XSS]",
-        ),
-        "instance": XssScanner(),
-    },
-    {
-        "meta": ScannerMeta(
-            key="sqli",
-            label="SQL Injection Detection",
-            description="Detección de SQL Injection basada en errores de base de datos.",
-            tier="active",
-            default=True,
-            icon="[SQL]",
-        ),
-        "instance": SqliScanner(),
-    },
-    {
-        "meta": ScannerMeta(
-            key="misconfig",
-            label="Misconfiguration Detection",
-            description="Archivos expuestos, directory listing y open redirect.",
-            tier="active",
-            default=True,
-            icon="[CFG]",
-        ),
-        "instance": MisconfigScanner(),
-    },
-    # ── OWASP Top 10 — BASE (pasivos) ───────────────────────
     {
         "meta": ScannerMeta(
             key="crypto",
@@ -208,7 +179,40 @@ SCANNER_REGISTRY: list[dict[str, Any]] = [
         ),
         "instance": IntegrityScanner(),
     },
-    # ── OWASP Top 10 — ACTIVE ───────────────────────────────
+    # ── ACTIVE (requieren modo de escaneo activo) ──────────
+    {
+        "meta": ScannerMeta(
+            key="xss",
+            label="XSS Detection",
+            description="Detección de Cross-Site Scripting reflejado con payloads canary.",
+            tier="active",
+            default=True,
+            icon="[XSS]",
+        ),
+        "instance": XssScanner(),
+    },
+    {
+        "meta": ScannerMeta(
+            key="sqli",
+            label="SQL Injection Detection",
+            description="Detección de SQL Injection basada en errores de base de datos.",
+            tier="active",
+            default=True,
+            icon="[SQL]",
+        ),
+        "instance": SqliScanner(),
+    },
+    {
+        "meta": ScannerMeta(
+            key="misconfig",
+            label="Misconfiguration Detection",
+            description="Archivos expuestos, directory listing y open redirect.",
+            tier="active",
+            default=True,
+            icon="[CFG]",
+        ),
+        "instance": MisconfigScanner(),
+    },
     {
         "meta": ScannerMeta(
             key="broken_access",
@@ -264,7 +268,20 @@ SCANNER_REGISTRY: list[dict[str, Any]] = [
         ),
         "instance": SsrfScanner(),
     },
-    # ── JS Client-Side Analysis ─────────────────────────────
+    {
+        "meta": ScannerMeta(
+            key="nuclei",
+            label="Nuclei — Vulnerability Scanner",
+            description=(
+                "Escaneo con 9000+ templates de ProjectDiscovery: CVEs, paneles expuestos, "
+                "misconfigs, default credentials, y más. Severidad CRITICAL/HIGH/MEDIUM."
+            ),
+            tier="active",
+            default=True,
+            icon="[NUC]",
+        ),
+        "instance": NucleiScanner(),
+    },
     {
         "meta": ScannerMeta(
             key="js_analysis",
@@ -306,12 +323,9 @@ _REGISTRY_MAP: dict[str, dict[str, Any]] = {
     entry["meta"].key: entry for entry in SCANNER_REGISTRY
 }
 
-# Listas legacy para retrocompatibilidad.
+# Listas por tier.
 BASE_SCANNERS: list[BaseScanner] = [
     e["instance"] for e in SCANNER_REGISTRY if e["meta"].tier == "base"
-]
-RECON_SCANNERS: list[BaseScanner] = [
-    e["instance"] for e in SCANNER_REGISTRY if e["meta"].tier == "recon"
 ]
 ACTIVE_SCANNERS: list[BaseScanner] = [
     e["instance"] for e in SCANNER_REGISTRY if e["meta"].tier == "active"
@@ -321,78 +335,58 @@ DEFAULT_SCANNERS = BASE_SCANNERS
 
 # ── Funciones públicas ────────────────────────────────────────
 
-def get_available_scanners(
-    scan_mode: str,
-    has_advanced: bool,
-) -> list[ScannerMeta]:
+def get_available_scanners(scan_mode: str) -> list[ScannerMeta]:
     """
-    Devuelve la metadata de los scanners disponibles para un usuario
-    según su plan y el modo seleccionado. Se usa en el formulario
-    para mostrar checkboxes.
+    Devuelve la metadata de los scanners disponibles según el modo seleccionado.
+    - Modo passive: solo tier 'base'.
+    - Modo active:  tier 'base' + tier 'active'.
     """
-    available: list[ScannerMeta] = []
-    for entry in SCANNER_REGISTRY:
-        meta = entry["meta"]
-        if meta.tier == "base":
-            available.append(meta)
-        elif meta.tier == "recon" and has_advanced:
-            available.append(meta)
-        elif meta.tier == "active" and has_advanced and scan_mode == "active":
-            available.append(meta)
-    return available
+    if scan_mode == "active":
+        return [entry["meta"] for entry in SCANNER_REGISTRY]
+    return [entry["meta"] for entry in SCANNER_REGISTRY if entry["meta"].tier == "base"]
 
 
 def get_all_scanner_meta() -> list[ScannerMeta]:
-    """Devuelve TODA la metadata del registry (para mostrar locks en UI)."""
+    """Devuelve TODA la metadata del registry (para mostrar en el UI)."""
     return [entry["meta"] for entry in SCANNER_REGISTRY]
 
 
-def get_scanners(scan_mode: str, has_advanced: bool) -> list[BaseScanner]:
+def get_scanners(scan_mode: str) -> list[BaseScanner]:
     """
-    Retrocompatibilidad: devuelve instancias de scanners según modo y plan.
+    Devuelve instancias de scanners según el modo.
     Usada cuando NO hay selección personalizada del usuario.
     """
-    scanners: list[BaseScanner] = list(BASE_SCANNERS)
-    if has_advanced:
-        scanners.extend(RECON_SCANNERS)
-        if scan_mode == "active":
-            scanners.extend(ACTIVE_SCANNERS)
-    return scanners
+    if scan_mode == "active":
+        return list(BASE_SCANNERS) + list(ACTIVE_SCANNERS)
+    return list(BASE_SCANNERS)
 
 
 def get_scanners_for_audit(
     scan_mode: str,
-    has_advanced: bool,
     selected_keys: list[str] | None = None,
 ) -> list[BaseScanner]:
     """
     Devuelve las instancias de scanners que se ejecutarán, filtradas por
-    la selección del usuario. Aplica gating de plan sobre la selección
-    para evitar que un usuario free ejecute scanners premium por manipulación.
+    la selección del usuario y el modo de escaneo.
 
-    Si selected_keys es None o vacío, comportamiento legacy (todos los disponibles).
+    Si selected_keys es None o vacío, ejecuta todos los disponibles para el modo.
     """
     if not selected_keys:
-        return get_scanners(scan_mode, has_advanced)
+        return get_scanners(scan_mode)
 
-    # Determinar qué tiers tiene acceso el usuario.
+    # Tiers permitidos según modo.
     allowed_tiers = {"base"}
-    if has_advanced:
-        allowed_tiers.add("recon")
-        if scan_mode == "active":
-            allowed_tiers.add("active")
+    if scan_mode == "active":
+        allowed_tiers.add("active")
 
-    scanners: list[BaseScanner] = []
-    for key in selected_keys:
-        entry = _REGISTRY_MAP.get(key)
-        if entry and entry["meta"].tier in allowed_tiers:
-            scanners.append(entry["instance"])
+    scanners: list[BaseScanner] = [
+        entry["instance"]
+        for key in selected_keys
+        if (entry := _REGISTRY_MAP.get(key)) and entry["meta"].tier in allowed_tiers
+    ]
 
-    # Fallback: si la selección queda vacía (todo deseleccionado), ejecutar base.
-    if not scanners:
-        return list(BASE_SCANNERS)
-
-    return scanners
+    # Fallback: si la selección queda vacía, ejecutar base.
+    return scanners or list(BASE_SCANNERS)
 
 
 __all__ = [
@@ -403,7 +397,6 @@ __all__ = [
     "ScannerMeta",
     "SCANNER_REGISTRY",
     "BASE_SCANNERS",
-    "RECON_SCANNERS",
     "ACTIVE_SCANNERS",
     "DEFAULT_SCANNERS",
     "get_scanners",
@@ -433,4 +426,6 @@ __all__ = [
     "JSAnalysisScanner",
     "JSSecretsScanner",
     "JSEndpointsScanner",
+    # Nuclei
+    "NucleiScanner",
 ]

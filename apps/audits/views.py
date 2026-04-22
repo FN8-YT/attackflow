@@ -6,10 +6,9 @@ en Celery vía `.delay()`, y redirige a la página de estado.
 El worker procesa el scan en background. El polling JS en /status/
 detecta el cambio de estado y redirige al informe.
 
-Tres preocupaciones transversales:
+Preocupaciones transversales:
 1. Rate limiting por usuario con django-ratelimit.
-2. Cuota mensual (depende del plan del usuario).
-3. Ownership: un usuario nunca puede ver auditorías de otro.
+2. Ownership: un usuario nunca puede ver auditorías de otro.
 """
 from __future__ import annotations
 
@@ -36,8 +35,7 @@ logger = logging.getLogger(__name__)
 @login_required
 def create_audit(request: HttpRequest) -> HttpResponse:
     """Crea una auditoría y la encola en Celery."""
-    # Rate limiting manual (no @ratelimit decorator) para poder capturar
-    # el error si el cache backend no está disponible y degradar con gracia.
+    # Rate limiting manual para poder degradar con gracia si el cache cae.
     if request.method == "POST":
         try:
             limited = is_ratelimited(
@@ -58,22 +56,7 @@ def create_audit(request: HttpRequest) -> HttpResponse:
             # Cache caído: no bloqueamos al usuario, seguimos.
             logger.warning("Rate limit check failed (cache down?): %s", rl_exc)
 
-    month_start = timezone.now().replace(
-        day=1, hour=0, minute=0, second=0, microsecond=0
-    )
-    monthly_count = Audit.objects.filter(
-        user=request.user, created_at__gte=month_start
-    ).count()
-    remaining = request.user.monthly_audit_quota - monthly_count
-
     if request.method == "POST":
-        if remaining <= 0:
-            messages.error(
-                request,
-                "Has alcanzado tu cuota mensual. Espera al próximo mes.",
-            )
-            return redirect("users:dashboard")
-
         form = AuditForm(request.POST, user=request.user)
         if form.is_valid():
             audit = form.save(commit=False)
@@ -100,13 +83,9 @@ def create_audit(request: HttpRequest) -> HttpResponse:
     else:
         form = AuditForm(user=request.user)
 
-    # Metadata de scanners para el template (checkboxes + locks por plan).
-    has_advanced = request.user.has_feature("advanced_scanners")
+    # Metadata de scanners para el template.
+    # active_only=True indica que el scanner requiere modo activo.
     all_scanners = get_all_scanner_meta()
-    available_keys = {
-        m.key for m in get_available_scanners("active", has_advanced)
-    }
-
     scanner_data = [
         {
             "key": meta.key,
@@ -115,7 +94,7 @@ def create_audit(request: HttpRequest) -> HttpResponse:
             "tier": meta.tier,
             "default": meta.default,
             "icon": meta.icon,
-            "available": meta.key in available_keys,
+            "active_only": meta.tier == "active",
         }
         for meta in all_scanners
     ]
@@ -125,8 +104,6 @@ def create_audit(request: HttpRequest) -> HttpResponse:
         "audits/new.html",
         {
             "form": form,
-            "remaining": remaining,
-            "has_advanced": has_advanced,
             "scanner_data": scanner_data,
         },
     )
@@ -179,7 +156,6 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
         "findings": findings,
         "breakdown": score_breakdown(findings),
         "score_band": severity_band(audit.score or 0),
-        "can_export_pdf": request.user.has_feature("pdf_export"),
     }
     return render(request, "audits/detail.html", context)
 

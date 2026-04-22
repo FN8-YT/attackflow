@@ -1,0 +1,10 @@
+-r base.txt
+
+# Producción — extras opcionales
+# Descomentar según necesidades:
+
+# Sentry — error tracking en producción
+# sentry-sdk[django]>=2.0
+
+# Gunicorn como fallback WSGI (si no se usa Daphne para todo)
+# gunicorn>=22.0

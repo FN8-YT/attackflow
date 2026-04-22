@@ -14,6 +14,11 @@ celery>=5.4
 redis>=5.0
 django-redis>=5.4
 
+# ── WebSockets (Django Channels + Redis channel layer) ─────────────────────
+channels>=4.1
+channels-redis>=4.2
+daphne>=4.1
+
 # Cliente HTTP para los scanners
 requests>=2.32
 
@@ -22,6 +27,13 @@ python-nmap>=0.7.1
 
 # Parseo de certificados X.509 para el TLS scanner
 cryptography>=42.0
+
+# ── SSL/TLS Deep Analysis ──────────────────────────────────────────────────
+sslyze>=6.0
+
+# ── Screenshot / Visual Monitoring ────────────────────────────────────────
+playwright>=1.44
+Pillow>=10.0
 
 # CORS (cuando llegue el frontend separado)
 django-cors-headers>=4.4

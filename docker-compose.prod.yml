@@ -1,0 +1,209 @@
+# =========================================================
+# docker-compose PRODUCCIÓN — AttackFlow SaaS
+#
+# Diferencias vs. docker-compose.yml (dev):
+#  ✓ Daphne en lugar de runserver (ASGI production-grade)
+#  ✓ nginx por delante (HTTPS + static + WebSocket proxy)
+#  ✓ Sin montaje de código como volumen (imagen inmutable)
+#  ✓ Celery con prefork (--concurrency=4, no watchmedo)
+#  ✓ Redis con persistencia (AOF)
+#  ✓ collectstatic en el paso migrate, servido por nginx
+#  ✓ Sin Mailpit (usar SMTP real en .env.prod)
+#
+# Uso rápido:
+#   # 1. Generar certificado TLS (o copiar el de Let's Encrypt)
+#   ./nginx/generate_cert.sh
+#
+#   # 2. Crear .env.prod (copia de .env.example.prod y rellena)
+#   cp .env.example.prod .env.prod
+#
+#   # 3. Construir imágenes y hacer migrate + collectstatic
+#   docker-compose -f docker-compose.prod.yml build
+#   docker-compose -f docker-compose.prod.yml run --rm migrate
+#
+#   # 4. Levantar
+#   docker-compose -f docker-compose.prod.yml up -d
+# =========================================================
+
+services:
+
+  # ── Base de datos ────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB}
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:     ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout:  5s
+      retries:  10
+    # No exponemos 5432 al host — solo accesible dentro de la red Docker
+    networks:
+      - internal
+
+  # ── Redis ────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # AOF persistence para no perder mensajes Celery/Channels en restart
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test:     ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout:  3s
+      retries:  10
+    networks:
+      - internal
+
+  # ── Migrate + collectstatic (servicio efímero) ───────────────────
+  # Corre migrate Y collectstatic antes de que web/nginx arranquen.
+  # Los archivos estáticos van al volumen 'staticfiles' que nginx lee.
+  migrate:
+    build:
+      context:    .
+      dockerfile: Dockerfile
+      args:
+        REQUIREMENTS: requirements/prod.txt
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput --clear"
+    env_file: .env.prod
+    volumes:
+      - staticfiles:/app/staticfiles   # collectstatic escribe aquí
+      - media:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - internal
+
+  # ── Daphne — ASGI server (HTTP + WebSocket) ──────────────────────
+  web:
+    build:
+      context:    .
+      dockerfile: Dockerfile
+      args:
+        REQUIREMENTS: requirements/prod.txt
+    # -b 0.0.0.0 para aceptar conexiones de nginx (en otra red Docker)
+    # -p 8000 puerto estándar interno
+    # --proxy-headers: confiar en X-Forwarded-For / X-Forwarded-Proto de nginx
+    command: >
+      daphne
+        --bind 0.0.0.0
+        --port 8000
+        --proxy-headers
+        --access-log -
+        config.asgi:application
+    env_file: .env.prod
+    volumes:
+      - media:/app/media               # media uploads persistentes
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    expose:
+      - "8000"                         # solo visible para nginx, no al host
+    restart: unless-stopped
+    networks:
+      - internal
+
+  # ── Celery worker ────────────────────────────────────────────────
+  worker:
+    build:
+      context:    .
+      dockerfile: Dockerfile
+      args:
+        REQUIREMENTS: requirements/prod.txt
+    # prefork es el pool por defecto (más eficiente que solo/eventlet para I/O bound)
+    # --concurrency=4 — ajustar según CPUs del servidor
+    command: celery -A config worker --loglevel=info --concurrency=4 --max-tasks-per-child=100
+    env_file: .env.prod
+    volumes:
+      - media:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - internal
+
+  # ── Celery Beat ──────────────────────────────────────────────────
+  # Solo UNA instancia debe correr. El scheduler persistente guarda
+  # el estado en /app/celerybeat/celerybeat-schedule.
+  beat:
+    build:
+      context:    .
+      dockerfile: Dockerfile
+      args:
+        REQUIREMENTS: requirements/prod.txt
+    command: >
+      celery -A config beat
+        --loglevel=info
+        --scheduler celery.beat:PersistentScheduler
+        --schedule /app/celerybeat/celerybeat-schedule
+    env_file: .env.prod
+    volumes:
+      - celerybeat_data:/app/celerybeat
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - internal
+
+  # ── nginx ────────────────────────────────────────────────────────
+  # Entrada pública. Termina TLS, sirve estáticos y hace proxy a Daphne.
+  # Puerto 80 → redirect 301 a HTTPS
+  # Puerto 443 → proxy a web:8000 (HTTP + WebSocket)
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - staticfiles:/staticfiles:ro   # archivos de collectstatic
+      - media:/media:ro
+    depends_on:
+      - web
+    networks:
+      - internal
+      - external
+
+# ── Redes ────────────────────────────────────────────────────────────
+# internal: red privada Docker (DB, Redis, Daphne, workers)
+# external: solo nginx se conecta aquí (exponiendo 80/443 al host)
+networks:
+  internal:
+    driver: bridge
+  external:
+    driver: bridge
+
+# ── Volúmenes ────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:
+  celerybeat_data:
+  staticfiles:    # compartido entre migrate (escritura) y nginx (lectura)
+  media:          # compartido entre web/worker (escritura) y nginx (lectura)

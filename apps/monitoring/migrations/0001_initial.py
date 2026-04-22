@@ -33,7 +33,7 @@ class Migration(migrations.Migration):
                 ("is_active", models.BooleanField(default=True, verbose_name="active")),
                 ("check_interval", models.IntegerField(
                     choices=[
-                        (5, "Every 5 min (Premium)"),
+                        (5, "Every 5 min"),
                         (15, "Every 15 min"),
                         (30, "Every 30 min"),
                         (60, "Every hour"),

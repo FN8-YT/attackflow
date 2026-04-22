@@ -2,7 +2,7 @@ from django.apps import AppConfig
 
 
 class UsersConfig(AppConfig):
-    """Cuentas de usuario, autenticación y planes."""
+    """Cuentas de usuario y autenticación."""
 
     default_auto_field = "django.db.models.BigAutoField"
     name = "apps.users"

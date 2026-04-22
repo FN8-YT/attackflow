@@ -48,3 +48,14 @@ htmlcov/
 
 # Docker
 *.pid
+
+# Claude Code — configuración local del IDE AI
+.claude/
+
+# nginx TLS certificates — nunca subir claves privadas
+nginx/certs/*.pem
+nginx/certs/*.key
+nginx/certs/*.crt
+
+# Producción env template (sí se sube, pero no el .env.prod real)
+!.env.example.prod

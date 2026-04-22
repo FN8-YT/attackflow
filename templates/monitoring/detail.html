@@ -1,272 +1,1375 @@
 {% extends "base.html" %}
-{% block title %}{{ target.name }} — Monitor — AttackFlow{% endblock %}
+{% block title %}{{ target.name }} — Monitoring{% endblock %}
 
 {% block content %}
-<p><a href="{% url 'monitoring:dashboard' %}" class="muted small">&lt; back_to_monitoring</a></p>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+@keyframes livePulse { 0%,100%{opacity:1;} 50%{opacity:.4;} }
+@keyframes rowFadeIn { from{opacity:0;background:rgba(26,173,23,.06);} to{opacity:1;background:transparent;} }
+.live-dot { display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green-bright);
+    box-shadow:0 0 6px var(--green-bright);animation:livePulse 1s ease-in-out infinite;margin-right:.3rem; }
+.new-row { animation:rowFadeIn .8s ease-out forwards; }
+.sub-badge { display:inline-block;font-size:.52rem;font-weight:700;padding:.04rem .22rem;vertical-align:middle; }
+.sub-active   { color:var(--green-bright);background:rgba(26,173,23,.12);border:1px solid rgba(26,173,23,.3); }
+.sub-inactive { color:var(--gray);background:rgba(255,255,255,.04);border:1px solid var(--chrome-border); }
+.sev-critical { border-color:rgba(255,68,68,.3);background:rgba(255,68,68,.05); }
+.sev-high     { border-color:rgba(204,136,0,.3);background:rgba(204,136,0,.05); }
+.sev-medium   { border-color:rgba(204,170,0,.2);background:rgba(204,170,0,.04); }
+.sev-info     { border-color:var(--chrome-border);background:transparent; }
+</style>
 
-<!-- Terminal header -->
-<div class="terminal" style="margin-bottom:1.4rem;">
-    <div><span class="prompt">root@attackflow:~#</span> <span class="cmd">monitor</span> <span class="flag">--target</span> <span class="cmd">{{ target.url }}</span></div>
-    <div class="output">> Name: {{ target.name }}</div>
-    <div class="output">> Interval: every {{ target.check_interval }} min // Status:
-        <span style="color:{% if target.current_status == 'up' %}var(--green-bright){% elif target.current_status == 'down' %}var(--red){% elif target.current_status == 'error' %}var(--orange){% else %}var(--text-gray){% endif %};">
+<!-- ── Terminal header ─────────────────────────────────────────────────── -->
+<div class="terminal" style="margin-bottom:1rem;">
+    <div>
+        <span class="prompt">root@attackflow:~#</span>
+        <span class="cmd">monitor</span>
+        <span class="flag">--target</span>
+        <span class="cmd">{{ target.url|truncatechars:60 }}</span>
+        <span class="flag">--live</span>
+    </div>
+    <div class="output">&gt; Status:
+        <span id="live-status" style="font-weight:700;
+            color:{% if target.current_status == 'up' %}var(--green-bright){% elif target.current_status == 'down' %}var(--red){% elif target.current_status == 'error' %}var(--orange){% else %}var(--text-gray){% endif %};">
             {{ target.current_status|upper }}
         </span>
+        · interval:
+        <span style="color:{% if target.is_live %}var(--green-bright){% else %}var(--text-gray){% endif %};font-weight:{% if target.is_live %}700{% else %}400{% endif %};">
+            {% if target.is_live %}<span class="live-dot"></span>LIVE / {% endif %}{{ target.interval_display }}
+        </span>
+        {% if target.last_check_at %}· last: <span id="live-last-check">{{ target.last_check_at|date:"d/m H:i:s" }}</span>{% endif %}
+        {% if not target.is_active %}
+        <span style="color:var(--orange);margin-left:.5rem;font-weight:700;">⏸ PAUSED</span>
+        {% endif %}
         <span class="cursor"></span>
     </div>
 </div>
 
-<!-- Metrics row -->
-<div class="stats" style="margin-bottom:1.4rem;">
-    <div class="stat-card" style="text-align:center;">
-        <div class="stat-val" style="font-size:1.6rem;
-            color:{% if target.current_status == 'up' %}var(--green-bright){% elif target.current_status == 'down' %}var(--red){% elif target.current_status == 'error' %}var(--orange){% else %}var(--gray){% endif %};">
-            {{ target.current_status|upper }}
-        </div>
-        <div class="stat-label">current status</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-val" style="color:{% if target.uptime_pct and target.uptime_pct >= 99 %}var(--green-bright){% elif target.uptime_pct and target.uptime_pct >= 90 %}var(--orange){% else %}var(--red){% endif %};">
-            {% if target.uptime_pct %}{{ target.uptime_pct }}%{% else %}—{% endif %}
-        </div>
-        <div class="stat-label">uptime (last 30)</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-val" style="color:{% if target.last_response_ms and target.last_response_ms > 3000 %}var(--red){% elif target.last_response_ms and target.last_response_ms > 1000 %}var(--orange){% else %}var(--green-bright){% endif %};">
-            {% if target.last_response_ms %}{{ target.last_response_ms }}ms{% else %}—{% endif %}
-        </div>
-        <div class="stat-label">last response</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-val" style="color:{% if target.last_ssl_days and target.last_ssl_days <= 7 %}var(--red){% elif target.last_ssl_days and target.last_ssl_days <= 30 %}var(--orange){% else %}var(--green-bright){% endif %};">
-            {% if target.last_ssl_days %}{{ target.last_ssl_days }}d{% else %}—{% endif %}
-        </div>
-        <div class="stat-label">ssl days left</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-val" style="color:{% if target.consecutive_failures > 0 %}var(--red){% else %}var(--text-gray){% endif %};">
-            {{ target.consecutive_failures }}
-        </div>
-        <div class="stat-label">consec. failures</div>
-    </div>
-    <div class="stat-card">
-        <div class="stat-val" style="color:var(--xp-blue);">{{ target.recent_changes_count }}</div>
-        <div class="stat-label">changes 24h</div>
-    </div>
-</div>
+<!-- ── Actions bar ─────────────────────────────────────────────────────── -->
+<div style="display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap;align-items:center;">
+    <a href="{% url 'monitoring:dashboard' %}" class="btn btn-ghost btn-sm">← back</a>
 
-<!-- Actions bar -->
-<div style="display:flex;gap:.5rem;align-items:center;margin-bottom:1.4rem;flex-wrap:wrap;">
-    <form method="post" action="{% url 'monitoring:run_now' target.pk %}">
+    <!-- Check now — AJAX -->
+    <form id="form-run-now" method="post" action="{% url 'monitoring:run_now' target.pk %}" style="display:inline;">
         {% csrf_token %}
-        <button class="btn btn-primary btn-sm" type="submit">▶ check now</button>
+        <button id="btn-run-now" class="btn btn-primary btn-sm" type="submit">▶ check now</button>
     </form>
-    <form method="post" action="{% url 'monitoring:toggle' target.pk %}">
+
+    <!-- Pause / Resume — AJAX -->
+    <form id="form-toggle" method="post" action="{% url 'monitoring:toggle' target.pk %}" style="display:inline;">
         {% csrf_token %}
-        <button class="btn btn-ghost btn-sm" type="submit">
+        <button id="btn-toggle" class="btn btn-ghost btn-sm" type="submit">
             {% if target.is_active %}⏸ pause{% else %}▶ resume{% endif %}
         </button>
     </form>
-    <a href="{% url 'monitoring:delete' target.pk %}" class="btn btn-ghost btn-sm" style="color:var(--red);border-color:rgba(220,50,50,.3);">✕ delete</a>
-    <div style="flex:1;"></div>
-    <div style="color:var(--text-gray);font-size:.68rem;">
-        last check: {% if target.last_check_at %}{{ target.last_check_at|date:"d/m/Y H:i:s" }}{% else %}never{% endif %}
+
+    <!-- Deep check badge -->
+    <span id="deep-check-badge" style="font-size:.58rem;color:var(--gray);padding:.05rem .3rem;
+        background:var(--chrome);border:1px solid var(--chrome-border);display:none;">
+        🔍 deep check running…
+    </span>
+
+    <a href="{% url 'monitoring:delete' target.pk %}" class="btn btn-ghost btn-sm"
+       style="color:var(--red);margin-left:auto;">✕ delete</a>
+</div>
+
+<!-- ══ Row 1: Key Metrics ══════════════════════════════════════════════ -->
+<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:.6rem;margin-bottom:1rem;">
+
+    <!-- Security Score -->
+    <div class="card" id="card-score" style="text-align:center;padding:.7rem .5rem;
+        border-color:{% if grade == 'A' %}rgba(26,173,23,.4){% elif grade == 'B' %}rgba(26,173,23,.25){% elif grade == 'C' %}rgba(204,136,0,.35){% elif grade == 'D' %}rgba(224,112,0,.35){% elif grade == 'F' %}rgba(220,50,50,.4){% else %}var(--chrome-border){% endif %};">
+        <div style="font-size:.55rem;color:var(--gray);letter-spacing:.1em;margin-bottom:.2rem;">SEC SCORE</div>
+        <div id="metric-score" style="font-size:1.6rem;font-weight:900;line-height:1;color:{{ grade_color }};">
+            {% if target.last_security_score is not None %}{{ target.last_security_score }}{% else %}—{% endif %}
+        </div>
+        <div id="metric-grade" style="font-size:.9rem;font-weight:700;color:{{ grade_color }};margin-top:.1rem;">Grade {{ grade }}</div>
+    </div>
+
+    <!-- Uptime -->
+    <div class="card" style="text-align:center;padding:.7rem .5rem;">
+        <div style="font-size:.55rem;color:var(--gray);letter-spacing:.1em;margin-bottom:.2rem;">UPTIME</div>
+        <div id="metric-uptime" style="font-size:1.3rem;font-weight:700;
+            color:{% if target.uptime_pct and target.uptime_pct >= 99 %}var(--green-bright){% elif target.uptime_pct and target.uptime_pct >= 90 %}var(--orange){% else %}var(--text-gray){% endif %};">
+            {% if target.uptime_pct %}{{ target.uptime_pct }}%{% else %}—{% endif %}
+        </div>
+        <div style="font-size:.58rem;color:var(--gray);">last 30 checks</div>
+    </div>
+
+    <!-- Response time -->
+    <div class="card" style="text-align:center;padding:.7rem .5rem;">
+        <div style="font-size:.55rem;color:var(--gray);letter-spacing:.1em;margin-bottom:.2rem;">RESP TIME</div>
+        <div id="live-resp" style="font-size:1.3rem;font-weight:700;
+            color:{% if target.last_response_ms and target.last_response_ms > 3000 %}var(--red){% elif target.last_response_ms and target.last_response_ms > 1000 %}var(--orange){% else %}var(--green-bright){% endif %};">
+            {% if target.last_response_ms %}{{ target.last_response_ms }}ms{% else %}—{% endif %}
+        </div>
+        <div id="live-http" style="font-size:.58rem;color:var(--gray);">HTTP {{ target.last_http_status|default:"—" }}</div>
+    </div>
+
+    <!-- SSL -->
+    <div class="card" style="text-align:center;padding:.7rem .5rem;">
+        <div style="font-size:.55rem;color:var(--gray);letter-spacing:.1em;margin-bottom:.2rem;">SSL EXPIRY</div>
+        <div id="metric-ssl" style="font-size:1.3rem;font-weight:700;
+            color:{% if target.last_ssl_days and target.last_ssl_days <= 7 %}var(--red){% elif target.last_ssl_days and target.last_ssl_days <= 30 %}var(--orange){% else %}var(--green-bright){% endif %};">
+            {% if target.last_ssl_days %}{{ target.last_ssl_days }}d{% else %}—{% endif %}
+        </div>
+        <div style="font-size:.58rem;color:var(--gray);">{% if last_check and last_check.ssl_issuer %}{{ last_check.ssl_issuer|truncatechars:16 }}{% else %}no data{% endif %}</div>
+    </div>
+
+    <!-- Consecutive failures -->
+    <div class="card" style="text-align:center;padding:.7rem .5rem;">
+        <div style="font-size:.55rem;color:var(--gray);letter-spacing:.1em;margin-bottom:.2rem;">FAILURES</div>
+        <div id="metric-failures" style="font-size:1.3rem;font-weight:700;
+            color:{% if target.consecutive_failures > 0 %}var(--red){% else %}var(--green-bright){% endif %};">
+            {{ target.consecutive_failures }}
+        </div>
+        <div style="font-size:.58rem;color:var(--gray);">consecutive</div>
+    </div>
+
+    <!-- Changes 24h -->
+    <div class="card" style="text-align:center;padding:.7rem .5rem;">
+        <div style="font-size:.55rem;color:var(--gray);letter-spacing:.1em;margin-bottom:.2rem;">CHANGES</div>
+        <div style="font-size:1.3rem;font-weight:700;
+            color:{% if target.recent_changes_count > 0 %}var(--orange){% else %}var(--text-gray){% endif %};">
+            {{ target.recent_changes_count }}
+        </div>
+        <div style="font-size:.58rem;color:var(--gray);">last 24h</div>
     </div>
 </div>
 
-<div style="display:grid;grid-template-columns:1fr 300px;gap:1.2rem;align-items:start;">
+<!-- ══ Row 2: Chart + Security Headers ════════════════════════════════ -->
+<div style="display:grid;grid-template-columns:1fr 260px;gap:1rem;margin-bottom:1rem;align-items:start;">
 
-<!-- ── Left: checks history ─── -->
-<div>
-    <!-- Response time mini-chart -->
-    {% if checks %}
-    <div class="card" style="margin-bottom:1.2rem;">
-        <div class="card-header">
-            <span>response_time_history</span>
-            <span class="muted small">last {{ checks|length }} checks</span>
-        </div>
-        <div style="display:flex;align-items:flex-end;gap:2px;height:48px;padding:.4rem 0;">
-            {% for check in checks reversed %}
-            {% with check.response_time_ms as ms %}
-            <div title="{{ check.created_at|date:'d/m H:i' }} // {% if ms %}{{ ms }}ms{% else %}{{ check.status }}{% endif %}"
-                 style="flex:1;min-width:4px;max-width:16px;
-                     background:{% if check.status == 'up' %}{% if ms and ms > 3000 %}var(--red){% elif ms and ms > 1000 %}var(--orange){% else %}var(--green){% endif %}{% elif check.status == 'down' %}var(--red){% else %}var(--orange){% endif %};
-                     height:{% if ms %}{% widthratio ms 5000 100 %}%{% else %}8%{% endif %};
-                     min-height:4px;
-                     opacity:.8;transition:opacity .2s;" onmouseenter="this.style.opacity=1" onmouseleave="this.style.opacity=.8">
-            </div>
-            {% endwith %}
-            {% endfor %}
-        </div>
-        <div style="display:flex;justify-content:space-between;font-size:.6rem;color:var(--gray-dim);">
-            <span>{{ checks.last.created_at|date:"d/m H:i" }}</span>
-            <span>now</span>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Check log -->
+    <!-- Response Time + Score Chart -->
     <div class="card">
-        <div class="card-header">
-            <span>check_log</span>
-            <span class="muted small">{{ checks|length }} entries</span>
-        </div>
-
-        {% if checks %}
-        <div style="display:flex;flex-direction:column;gap:.3rem;">
-            {% for check in checks %}
-            <div style="display:grid;grid-template-columns:auto 1fr auto auto auto;gap:.6rem;align-items:center;
-                        padding:.35rem .5rem;background:var(--chrome);font-size:.68rem;
-                        border-left:2px solid {% if check.status == 'up' %}var(--green){% elif check.status == 'down' %}var(--red){% else %}var(--orange){% endif %};">
-                <!-- Status -->
-                <span style="color:{% if check.status == 'up' %}var(--green-bright){% elif check.status == 'down' %}var(--red){% else %}var(--orange){% endif %};font-weight:600;letter-spacing:.06em;min-width:3.5rem;">
-                    {{ check.status|upper }}
-                </span>
-                <!-- Timestamp -->
-                <span style="color:var(--text-gray);">{{ check.created_at|date:"d/m H:i:s" }}</span>
-                <!-- HTTP -->
-                <span style="color:{% if check.http_status_code and check.http_status_code >= 500 %}var(--red){% elif check.http_status_code and check.http_status_code >= 400 %}var(--orange){% else %}var(--text-gray){% endif %};">
-                    {% if check.http_status_code %}HTTP {{ check.http_status_code }}{% else %}—{% endif %}
-                </span>
-                <!-- Response time -->
-                <span style="color:{% if check.response_time_ms and check.response_time_ms > 3000 %}var(--red){% elif check.response_time_ms and check.response_time_ms > 1000 %}var(--orange){% else %}var(--text-gray){% endif %};min-width:4rem;text-align:right;">
-                    {% if check.response_time_ms %}{{ check.response_time_ms }}ms{% else %}—{% endif %}
-                </span>
-                <!-- SSL days -->
-                <span style="color:{% if check.ssl_expiry_days and check.ssl_expiry_days <= 7 %}var(--red){% elif check.ssl_expiry_days and check.ssl_expiry_days <= 30 %}var(--orange){% else %}var(--gray-dim){% endif %};min-width:3rem;text-align:right;">
-                    {% if check.ssl_expiry_days %}ssl {{ check.ssl_expiry_days }}d{% endif %}
-                </span>
-            </div>
-            {% if check.error_message %}
-            <div style="font-size:.63rem;color:var(--red);padding:.2rem .5rem .35rem 1rem;margin-top:-.3rem;background:rgba(220,50,50,.06);border-left:2px solid rgba(220,50,50,.2);">
-                {{ check.error_message|truncatechars:120 }}
-            </div>
-            {% endif %}
-            {% endfor %}
-        </div>
-        {% else %}
-        <div style="color:var(--text-gray);font-size:.72rem;padding:.5rem;text-align:center;">
-            no checks yet — first check will run at the next scheduled interval
-        </div>
-        {% endif %}
-    </div>
-</div>
-
-<!-- ── Right: changes + SSL info ─── -->
-<div style="display:flex;flex-direction:column;gap:1rem;">
-
-    <!-- SSL / cert info -->
-    {% with checks.0 as last %}
-    {% if last and last.ssl_issuer %}
-    <div class="sys-widget">
-        <div class="sys-widget-header">
-            <span>ssl_certificate</span>
-            <span class="xp-dots"><span class="xp-dot"></span><span class="xp-dot"></span><span class="xp-dot xp-dot-close"></span></span>
-        </div>
-        <div class="sys-widget-body" style="font-size:.68rem;line-height:1.9;color:var(--text-gray);">
-            <div><span style="color:var(--gray-dim);">issuer </span>{{ last.ssl_issuer }}</div>
-            <div><span style="color:var(--gray-dim);">expires </span>
-                <span style="color:{% if last.ssl_expiry_days and last.ssl_expiry_days <= 7 %}var(--red){% elif last.ssl_expiry_days and last.ssl_expiry_days <= 30 %}var(--orange){% else %}var(--green-bright){% endif %};">
-                    {{ last.ssl_expiry_days|default:"?" }}d
-                </span>
-            </div>
-            {% if last.ssl_fingerprint %}
-            <div style="font-size:.6rem;word-break:break-all;"><span style="color:var(--gray-dim);">sha256 </span>{{ last.ssl_fingerprint }}</div>
-            {% endif %}
-        </div>
-    </div>
-    {% endif %}
-    {% endwith %}
-
-    <!-- Last headers snapshot -->
-    {% with checks.0 as last %}
-    {% if last and last.headers_snapshot %}
-    <div class="sys-widget">
-        <div class="sys-widget-header">
-            <span>security_headers</span>
-            <span class="xp-dots"><span class="xp-dot"></span><span class="xp-dot"></span><span class="xp-dot xp-dot-close"></span></span>
-        </div>
-        <div class="sys-widget-body" style="font-size:.63rem;line-height:1.8;color:var(--text-gray);">
-            {% for hdr, val in last.headers_snapshot.items %}
-            <div style="margin-bottom:.2rem;">
-                <div style="color:var(--xp-blue);font-size:.6rem;">{{ hdr }}</div>
-                <div style="color:var(--text-dim);word-break:break-all;">{{ val|truncatechars:80 }}</div>
-            </div>
-            {% endfor %}
-        </div>
-    </div>
-    {% endif %}
-    {% endwith %}
-
-    <!-- Changes list -->
-    <div class="sys-widget">
-        <div class="sys-widget-header">
-            <span>detected_changes</span>
-            <span class="xp-dots"><span class="xp-dot"></span><span class="xp-dot"></span><span class="xp-dot xp-dot-close"></span></span>
-        </div>
-        <div class="sys-widget-body" style="max-height:420px;overflow-y:auto;">
-            {% if changes %}
-            {% for change in changes %}
-            <div style="padding:.4rem 0;border-bottom:1px solid var(--chrome-border);font-size:.68rem;line-height:1.5;">
-                <div style="display:flex;align-items:center;gap:.4rem;margin-bottom:.15rem;">
-                    <span style="color:
-                        {% if change.severity == 'critical' %}var(--red)
-                        {% elif change.severity == 'high' %}var(--orange)
-                        {% elif change.severity == 'medium' %}#ccaa00
-                        {% elif change.severity == 'low' %}var(--xp-blue)
-                        {% else %}var(--text-gray){% endif %};
-                        font-weight:700;letter-spacing:.05em;font-size:.58rem;text-transform:uppercase;">
-                        {{ change.severity }}
-                    </span>
-                    <span style="color:var(--gray-dim);font-size:.6rem;">{{ change.created_at|date:"d/m H:i" }}</span>
-                </div>
-                <div style="color:var(--text-dim);">{{ change.description }}</div>
-                {% if change.old_value or change.new_value %}
-                <details style="margin-top:.25rem;">
-                    <summary style="color:var(--xp-blue);font-size:.6rem;cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:.3rem;">
-                        <span style="display:inline-block;width:0;height:0;border-top:4px solid transparent;border-bottom:4px solid transparent;border-left:5px solid var(--xp-blue);transition:transform .2s;"></span>
-                        diff
-                    </summary>
-                    {% if change.old_value %}
-                    <div style="margin-top:.3rem;font-size:.6rem;color:var(--red);background:rgba(220,50,50,.06);padding:.2rem .4rem;word-break:break-all;">- {{ change.old_value }}</div>
-                    {% endif %}
-                    {% if change.new_value %}
-                    <div style="font-size:.6rem;color:var(--green);background:rgba(26,173,23,.06);padding:.2rem .4rem;word-break:break-all;">+ {{ change.new_value }}</div>
-                    {% endif %}
-                </details>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.7rem;flex-wrap:wrap;gap:.4rem;">
+            <div style="display:flex;align-items:center;gap:.5rem;">
+                <span style="color:var(--green);font-size:.72rem;letter-spacing:.1em;font-weight:600;">RESPONSE TIME HISTORY</span>
+                {% if target.is_live %}
+                <span style="font-size:.58rem;padding:.08rem .3rem;font-weight:700;
+                    color:var(--green-bright);background:rgba(26,173,23,.15);border:1px solid rgba(26,173,23,.4);
+                    animation:livePulse 1.5s ease-in-out infinite;">⚡ AUTO-REFRESH {{ target.interval_display }}</span>
                 {% endif %}
             </div>
-            {% endfor %}
-            {% else %}
-            <div style="color:var(--text-gray);font-size:.7rem;padding:.5rem 0;text-align:center;opacity:.6;">
-                no changes detected yet
+            <div style="display:flex;gap:.3rem;align-items:center;flex-wrap:wrap;">
+                <button onclick="setPoints(50)"  id="btn-50"  class="btn btn-ghost btn-sm" style="font-size:.58rem;opacity:1;">50p</button>
+                <button onclick="setPoints(100)" id="btn-100" class="btn btn-ghost btn-sm" style="font-size:.58rem;opacity:.5;">100p</button>
+                <button onclick="setPoints(200)" id="btn-200" class="btn btn-ghost btn-sm" style="font-size:.58rem;opacity:.5;">200p</button>
+                <span style="color:var(--chrome-border);font-size:.7rem;">|</span>
+                <span style="font-size:.58rem;color:var(--gray);">refresh:</span>
+                <button onclick="setRefresh(5)"   id="rf-5"   class="btn btn-ghost btn-sm" style="font-size:.58rem;{% if target.is_live and target.check_interval <= 5 %}opacity:1;color:var(--green-bright);{% else %}opacity:.45;{% endif %}">5s</button>
+                <button onclick="setRefresh(30)"  id="rf-30"  class="btn btn-ghost btn-sm" style="font-size:.58rem;{% if target.is_live and target.check_interval == 30 %}opacity:1;color:var(--green-bright);{% else %}opacity:.45;{% endif %}">30s</button>
+                <button onclick="setRefresh(60)"  id="rf-60"  class="btn btn-ghost btn-sm" style="font-size:.58rem;opacity:.45;">1m</button>
+                <button onclick="setRefresh(0)"   id="rf-off" class="btn btn-ghost btn-sm" style="font-size:.58rem;{% if not target.is_live %}opacity:1;{% else %}opacity:.45;{% endif %}">off</button>
             </div>
-            {% endif %}
+        </div>
+        <div style="position:relative;height:190px;">
+            <canvas id="resp-chart"></canvas>
+        </div>
+        <div style="display:flex;gap:1rem;margin-top:.4rem;font-size:.58rem;color:var(--text-gray);flex-wrap:wrap;">
+            <span><span style="color:rgba(26,173,23,.8);">■</span> online</span>
+            <span><span style="color:rgba(220,50,50,.8);">■</span> offline</span>
+            <span><span style="color:rgba(204,136,0,.8);">■</span> error</span>
+            <span><span style="color:rgba(100,160,255,.6);">—</span> score (0-100)</span>
+            <span style="color:var(--gray-dim);margin-left:auto;">dashed: 1s / 3s thresholds</span>
         </div>
     </div>
 
+    <!-- Security Headers -->
+    <div class="card" id="panel-headers">
+        <div style="color:var(--green);font-size:.72rem;letter-spacing:.1em;font-weight:600;margin-bottom:.6rem;">SECURITY HEADERS</div>
+        <div id="headers-list" style="display:flex;flex-direction:column;gap:.3rem;">
+        {% for h in header_analysis %}
+        <div style="display:flex;align-items:center;gap:.35rem;font-size:.64rem;" title="{{ h.name }}{% if h.value %}: {{ h.value|truncatechars:80 }}{% endif %}">
+            <span style="flex-shrink:0;width:36px;color:{% if h.present %}var(--text-dim){% else %}var(--text-gray){% endif %};font-size:.6rem;">{{ h.short }}</span>
+            <div style="flex:1;height:3px;background:var(--chrome-border);border-radius:2px;">
+                {% if h.present %}<div style="width:100%;height:100%;background:var(--green-bright);border-radius:2px;opacity:.7;"></div>{% endif %}
+            </div>
+            {% if h.present %}
+            <span style="color:var(--green-bright);font-size:.7rem;flex-shrink:0;">✓</span>
+            {% else %}
+            <span style="flex-shrink:0;font-size:.7rem;
+                color:{% if h.importance == 'critical' %}var(--red){% elif h.importance == 'high' %}var(--orange){% elif h.importance == 'medium' %}#ccaa00{% else %}var(--gray-dim){% endif %};">✗</span>
+            {% endif %}
+        </div>
+        {% endfor %}
+        </div>
+        <div style="margin-top:.6rem;padding-top:.5rem;border-top:1px solid var(--chrome-border);font-size:.58rem;color:var(--gray);">
+            CSP -20 · HSTS -15 · XCTO -10 · XFO -10 · RP -5 · PP -5
+        </div>
+    </div>
 </div>
-</div><!-- /grid -->
+
+<!-- ══ Row 3: Tech/WAF + SSL ══════════════════════════════════════════ -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;align-items:start;">
+
+    <!-- Tech Stack + WAF -->
+    <div class="card" id="panel-tech">
+        <div style="color:var(--green);font-size:.72rem;letter-spacing:.1em;font-weight:600;margin-bottom:.6rem;">TECHNOLOGY STACK</div>
+        <div id="tech-list">
+        {% if target.last_technologies %}
+        <div style="display:flex;flex-direction:column;gap:.25rem;">
+        {% for tech in target.last_technologies %}
+        <div style="display:flex;align-items:center;gap:.35rem;font-size:.68rem;">
+            <span style="color:var(--green-bright);font-size:.5rem;">▸</span>
+            <span style="color:var(--text-dim);">{{ tech }}</span>
+        </div>
+        {% endfor %}
+        </div>
+        {% else %}
+        <div style="color:var(--text-gray);font-size:.65rem;opacity:.6;">
+            {% if checks %}no technologies detected{% else %}run a check first{% endif %}
+        </div>
+        {% endif %}
+        </div>
+
+        <!-- WAF -->
+        <div id="panel-waf" style="margin-top:.65rem;padding-top:.55rem;border-top:1px solid var(--chrome-border);">
+            <div style="font-size:.58rem;color:var(--gray);letter-spacing:.08em;margin-bottom:.25rem;">WAF / CDN DETECTION</div>
+            <div id="waf-content">
+            {% if target.last_waf %}
+            <div style="display:flex;align-items:center;gap:.4rem;">
+                <span style="font-size:.75rem;">🛡</span>
+                <span style="color:var(--xp-blue);font-size:.72rem;font-weight:600;">{{ target.last_waf }}</span>
+            </div>
+            <div style="font-size:.6rem;color:var(--text-gray);margin-top:.15rem;">Ajusta tu bypass strategy — WAF activo</div>
+            {% else %}
+            <div style="font-size:.65rem;">
+                <span style="color:var(--orange);">⚠</span>
+                <span style="color:var(--text-gray);"> No WAF/CDN detected</span>
+            </div>
+            {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- SSL Certificate -->
+    <div class="card" id="panel-ssl">
+        <div style="color:var(--green);font-size:.72rem;letter-spacing:.1em;font-weight:600;margin-bottom:.6rem;">SSL CERTIFICATE</div>
+        <div id="ssl-content">
+        {% if last_check and last_check.ssl_expiry_days is not None %}
+        <div style="display:flex;flex-direction:column;gap:.4rem;font-size:.68rem;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="color:var(--gray);">expires in</span>
+                <span style="font-weight:700;
+                    color:{% if last_check.ssl_expiry_days <= 7 %}var(--red){% elif last_check.ssl_expiry_days <= 30 %}var(--orange){% else %}var(--green-bright){% endif %};">
+                    {{ last_check.ssl_expiry_days }} days
+                </span>
+            </div>
+            {% if last_check.ssl_issuer %}
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                <span style="color:var(--gray);flex-shrink:0;">issuer</span>
+                <span style="color:var(--text-dim);text-align:right;max-width:200px;word-break:break-word;">{{ last_check.ssl_issuer|truncatechars:48 }}</span>
+            </div>
+            {% endif %}
+            {% if last_check.ssl_fingerprint %}
+            <div>
+                <div style="color:var(--gray);margin-bottom:.15rem;font-size:.6rem;">SHA-256 fingerprint</div>
+                <div style="font-size:.55rem;color:var(--text-gray);font-family:monospace;word-break:break-all;
+                    background:var(--chrome);padding:.2rem .3rem;border:1px solid var(--chrome-border);">{{ last_check.ssl_fingerprint }}</div>
+            </div>
+            {% endif %}
+        </div>
+        {% else %}
+        <div style="color:var(--text-gray);font-size:.65rem;">
+            {% if last_check %}
+            <span style="color:var(--red);">✗</span> No HTTPS / SSL unavailable
+            {% else %}
+            <span style="opacity:.6;">run a check first</span>
+            {% endif %}
+        </div>
+        {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- ══ Row 4: Attack Surface (full width) ═════════════════════════════ -->
+<div class="card" style="margin-bottom:1rem;" id="panel-surface">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem;flex-wrap:wrap;gap:.4rem;">
+        <span style="color:var(--green);font-size:.72rem;letter-spacing:.1em;font-weight:600;">ATTACK SURFACE</span>
+        <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
+            <span id="surface-subdomain-counter" style="font-size:.6rem;color:var(--text-gray);"></span>
+            <span id="surface-paths-counter"     style="font-size:.6rem;color:var(--text-gray);"></span>
+            <span id="surface-last-scan"         style="font-size:.58rem;color:var(--gray);"></span>
+            <button onclick="triggerDeepCheck()" id="btn-deep"
+                style="font-size:.57rem;padding:.07rem .3rem;background:transparent;
+                    border:1px solid var(--chrome-border);color:var(--text-gray);cursor:pointer;
+                    border-radius:2px;font-family:inherit;">
+                🔍 scan now
+            </button>
+        </div>
+    </div>
+
+    <!-- 2-column grid: subdomains + exposed paths -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">
+
+        <!-- Subdomains -->
+        <div>
+            <div style="font-size:.6rem;color:var(--gray);letter-spacing:.1em;margin-bottom:.45rem;
+                padding-bottom:.3rem;border-bottom:1px solid var(--chrome-border);">
+                SUBDOMAINS DISCOVERED
+            </div>
+            <div id="subdomain-list" style="display:flex;flex-direction:column;gap:.22rem;max-height:240px;overflow-y:auto;">
+                <!-- JS-rendered -->
+                <div style="color:var(--text-gray);font-size:.65rem;opacity:.6;">
+                    {% if target.subdomains.exists %}
+                        <!-- rendered by JS on load -->
+                    {% else %}
+                        no subdomain scan yet — click "scan now" or wait for the 6h deep check
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Exposed paths -->
+        <div>
+            <div style="font-size:.6rem;color:var(--gray);letter-spacing:.1em;margin-bottom:.45rem;
+                padding-bottom:.3rem;border-bottom:1px solid var(--chrome-border);">
+                EXPOSED PATHS
+                {% if not target.check_sensitive_paths %}
+                <span style="color:var(--orange);font-size:.55rem;margin-left:.3rem;">· scan disabled</span>
+                {% endif %}
+            </div>
+            <div id="paths-list" style="display:flex;flex-direction:column;gap:.2rem;max-height:240px;overflow-y:auto;">
+                <!-- JS-rendered -->
+                {% if sensitive_paths %}
+                <div style="font-size:.62rem;color:var(--red);margin-bottom:.3rem;font-weight:600;">
+                    ⚠ {{ sensitive_paths|length }} path{{ sensitive_paths|length|pluralize:"s" }} exposed
+                </div>
+                {% for path in sensitive_paths %}
+                <div style="padding:.25rem .3rem;border:1px solid;border-radius:2px;font-size:.62rem;
+                    {% if path.severity == 'critical' %}border-color:rgba(255,68,68,.3);background:rgba(255,68,68,.05);
+                    {% elif path.severity == 'high' %}border-color:rgba(204,136,0,.3);background:rgba(204,136,0,.05);
+                    {% elif path.severity == 'medium' %}border-color:rgba(204,170,0,.2);background:rgba(204,170,0,.04);
+                    {% else %}border-color:var(--chrome-border);background:transparent;{% endif %}">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:.3rem;">
+                        <span style="font-family:monospace;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ path.path }}</span>
+                        <span style="font-size:.55rem;font-weight:700;flex-shrink:0;
+                            {% if path.severity == 'critical' %}color:#ff4444;{% elif path.severity == 'high' %}color:var(--orange);{% elif path.severity == 'medium' %}color:#ccaa00;{% else %}color:var(--text-gray);{% endif %}">
+                            {{ path.status_code }}
+                        </span>
+                    </div>
+                    <div style="color:var(--text-gray);font-size:.58rem;margin-top:.05rem;">{{ path.label }}</div>
+                </div>
+                {% endfor %}
+                {% elif checks %}
+                <div style="font-size:.65rem;color:var(--text-gray);">
+                    {% if target.is_live %}
+                    <span style="color:var(--xp-blue);">ℹ</span> Live targets scan paths in the 6h deep check
+                    {% elif target.check_sensitive_paths %}
+                    <span style="color:var(--green);">✓</span> No sensitive paths exposed
+                    {% else %}
+                    <span style="color:var(--gray);">— scanning disabled</span>
+                    {% endif %}
+                </div>
+                {% else %}
+                <div style="font-size:.65rem;color:var(--text-gray);opacity:.6;">run a check first</div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══ Row 5: Visual Monitoring (Screenshot) ══════════════════════════ -->
+<div class="card" style="margin-bottom:1rem;" id="panel-screenshot">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem;flex-wrap:wrap;gap:.4rem;">
+        <div style="display:flex;align-items:center;gap:.5rem;">
+            <span style="color:var(--green);font-size:.72rem;letter-spacing:.1em;font-weight:600;">VISUAL MONITOR</span>
+            <span id="screenshot-defacement-badge" style="display:none;font-size:.58rem;font-weight:700;padding:.05rem .35rem;
+                color:var(--red);background:rgba(220,50,50,.12);border:1px solid rgba(220,50,50,.35);
+                animation:livePulse 1s ease-in-out infinite;">⚠ DEFACEMENT ALERT</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:.6rem;font-size:.6rem;color:var(--text-gray);">
+            <span id="screenshot-diff-pct" style="font-weight:600;"></span>
+            <span id="screenshot-hash" style="font-family:monospace;color:var(--gray-dim);font-size:.55rem;"></span>
+            <span id="screenshot-time" style="color:var(--gray);"></span>
+        </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 220px;gap:1rem;align-items:start;">
+
+        <!-- Main screenshot -->
+        <div style="position:relative;">
+            <div id="screenshot-placeholder" style="width:100%;height:180px;background:var(--chrome);
+                border:1px solid var(--chrome-border);border-radius:2px;
+                display:flex;align-items:center;justify-content:center;flex-direction:column;gap:.4rem;">
+                <span style="font-size:1.4rem;opacity:.4;">📷</span>
+                <span style="color:var(--text-gray);font-size:.62rem;opacity:.6;">screenshot captured during deep check (every 6h)</span>
+            </div>
+            <img id="screenshot-img" src="" alt="Visual screenshot"
+                style="width:100%;display:none;border:1px solid var(--chrome-border);border-radius:2px;cursor:zoom-in;"
+                onclick="document.getElementById('screenshot-modal').style.display='flex';" />
+            <div id="screenshot-defacement-overlay" style="display:none;position:absolute;inset:0;
+                background:rgba(220,50,50,.14);border:2px solid rgba(220,50,50,.65);border-radius:2px;
+                pointer-events:none;align-items:center;justify-content:center;">
+                <span style="font-size:1.1rem;font-weight:900;color:var(--red);
+                    text-shadow:0 0 10px rgba(220,50,50,.9);letter-spacing:.04em;">⚠ PAGE DEFACED</span>
+            </div>
+        </div>
+
+        <!-- Diff history -->
+        <div>
+            <div style="font-size:.6rem;color:var(--gray);letter-spacing:.1em;margin-bottom:.45rem;
+                padding-bottom:.3rem;border-bottom:1px solid var(--chrome-border);">
+                DIFF HISTORY
+            </div>
+            <div id="screenshot-history" style="display:flex;flex-direction:column;gap:.15rem;max-height:180px;overflow-y:auto;">
+                <div style="color:var(--text-gray);font-size:.62rem;opacity:.5;">no screenshots yet</div>
+            </div>
+            <div style="margin-top:.5rem;padding-top:.4rem;border-top:1px solid var(--chrome-border);
+                font-size:.57rem;color:var(--gray);">
+                Threshold: <span style="color:var(--orange);">30% pixel change</span> → defacement alert
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Screenshot fullscreen modal -->
+<div id="screenshot-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:9999;
+    align-items:center;justify-content:center;cursor:zoom-out;" onclick="this.style.display='none';">
+    <img id="screenshot-modal-img" src="" alt="Screenshot fullscreen"
+        style="max-width:92vw;max-height:92vh;border:1px solid var(--chrome-border);border-radius:2px;" />
+</div>
+
+<!-- ══ Row 6: Check log + Change timeline ════════════════════════════ -->
+<div style="display:grid;grid-template-columns:1fr 300px;gap:1rem;align-items:start;">
+
+    <!-- Check log (dynamic) -->
+    <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem;">
+            <span style="color:var(--green);font-size:.72rem;letter-spacing:.1em;font-weight:600;">CHECK LOG</span>
+            <span id="log-live-badge" style="display:none;font-size:.57rem;color:var(--green-bright);
+                animation:livePulse 1.5s ease-in-out infinite;">⚡ live</span>
+        </div>
+        {% if checks %}
+        <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:.62rem;">
+            <thead>
+                <tr style="color:var(--gray);font-size:.57rem;letter-spacing:.07em;border-bottom:1px solid var(--chrome-border);">
+                    <th style="text-align:left;padding:.2rem .3rem;font-weight:600;">TIME</th>
+                    <th style="text-align:center;padding:.2rem .3rem;font-weight:600;">STATUS</th>
+                    <th style="text-align:right;padding:.2rem .3rem;font-weight:600;">RESP</th>
+                    <th style="text-align:right;padding:.2rem .3rem;font-weight:600;">HTTP</th>
+                    <th style="text-align:right;padding:.2rem .3rem;font-weight:600;">SSL</th>
+                    <th style="text-align:right;padding:.2rem .3rem;font-weight:600;">SCORE</th>
+                    <th style="text-align:left;padding:.2rem .3rem;font-weight:600;">INFO</th>
+                </tr>
+            </thead>
+            <tbody id="check-log-body">
+            {% for check in checks %}
+            <tr data-check-id="{{ check.pk }}" style="border-bottom:1px solid rgba(255,255,255,.03);">
+                <td style="padding:.18rem .3rem;color:var(--text-gray);white-space:nowrap;">{{ check.created_at|date:"d/m H:i:s" }}</td>
+                <td style="padding:.18rem .3rem;text-align:center;">
+                    <span style="font-size:.57rem;font-weight:700;padding:.04rem .22rem;
+                        {% if check.status == 'up' %}color:var(--green-bright);background:rgba(26,173,23,.12);border:1px solid rgba(26,173,23,.25);
+                        {% elif check.status == 'down' %}color:#e03232;background:rgba(220,50,50,.12);border:1px solid rgba(220,50,50,.25);
+                        {% else %}color:#cc8800;background:rgba(204,136,0,.12);border:1px solid rgba(204,136,0,.25);{% endif %}">
+                        {{ check.status }}
+                    </span>
+                </td>
+                <td style="padding:.18rem .3rem;text-align:right;
+                    color:{% if check.response_time_ms and check.response_time_ms > 3000 %}var(--red){% elif check.response_time_ms and check.response_time_ms > 1000 %}var(--orange){% else %}var(--text-dim){% endif %};">
+                    {% if check.response_time_ms %}{{ check.response_time_ms }}ms{% else %}—{% endif %}
+                </td>
+                <td style="padding:.18rem .3rem;text-align:right;color:var(--text-gray);">{{ check.http_status_code|default:"—" }}</td>
+                <td style="padding:.18rem .3rem;text-align:right;
+                    color:{% if check.ssl_expiry_days and check.ssl_expiry_days <= 7 %}var(--red){% elif check.ssl_expiry_days and check.ssl_expiry_days <= 30 %}var(--orange){% else %}var(--text-gray){% endif %};">
+                    {% if check.ssl_expiry_days %}{{ check.ssl_expiry_days }}d{% else %}—{% endif %}
+                </td>
+                <td style="padding:.18rem .3rem;text-align:right;
+                    color:{% if check.security_score is not None %}{% if check.security_score >= 75 %}var(--green-bright){% elif check.security_score >= 60 %}var(--orange){% else %}var(--red){% endif %}{% else %}var(--text-gray){% endif %};">
+                    {{ check.security_score|default:"—" }}
+                </td>
+                <td style="padding:.18rem .3rem;color:var(--text-gray);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.58rem;">
+                    {% if check.waf_detected %}<span style="color:var(--xp-blue);">{{ check.waf_detected }}</span>{% endif %}
+                    {% if check.error_message %}{{ check.error_message|truncatechars:35 }}{% endif %}
+                    {% if check.technologies %}
+                    <span style="color:var(--gray-dim);">{{ check.technologies|length }} tech</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% else %}
+        <div id="check-log-empty" style="color:var(--text-gray);font-size:.7rem;text-align:center;padding:1.5rem;opacity:.6;">no checks yet — click "check now"</div>
+        <table style="width:100%;border-collapse:collapse;font-size:.62rem;display:none;" id="check-log-table">
+            <thead>
+                <tr style="color:var(--gray);font-size:.57rem;letter-spacing:.07em;border-bottom:1px solid var(--chrome-border);">
+                    <th style="text-align:left;padding:.2rem .3rem;font-weight:600;">TIME</th>
+                    <th style="text-align:center;padding:.2rem .3rem;font-weight:600;">STATUS</th>
+                    <th style="text-align:right;padding:.2rem .3rem;font-weight:600;">RESP</th>
+                    <th style="text-align:right;padding:.2rem .3rem;font-weight:600;">HTTP</th>
+                    <th style="text-align:right;padding:.2rem .3rem;font-weight:600;">SSL</th>
+                    <th style="text-align:right;padding:.2rem .3rem;font-weight:600;">SCORE</th>
+                    <th style="text-align:left;padding:.2rem .3rem;font-weight:600;">INFO</th>
+                </tr>
+            </thead>
+            <tbody id="check-log-body"></tbody>
+        </table>
+        {% endif %}
+    </div>
+
+    <!-- Change timeline -->
+    <div class="card">
+        <div style="color:var(--green);font-size:.72rem;letter-spacing:.1em;font-weight:600;margin-bottom:.6rem;">CHANGE TIMELINE</div>
+        {% if changes %}
+        <div style="display:flex;flex-direction:column;max-height:460px;overflow-y:auto;">
+        {% for change in changes %}
+        <div style="display:flex;gap:.4rem;padding:.32rem 0;border-bottom:1px solid var(--chrome-border);">
+            <div style="flex-shrink:0;width:3px;align-self:stretch;border-radius:2px;
+                background:{% if change.severity == 'critical' %}#ff4444{% elif change.severity == 'high' %}var(--orange){% elif change.severity == 'medium' %}#ccaa00{% elif change.severity == 'low' %}var(--xp-blue){% else %}var(--gray-dim){% endif %};">
+            </div>
+            <div style="flex:1;min-width:0;">
+                <div style="font-size:.62rem;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:.04rem;">
+                    {% if change.change_type == 'status_down' %}🔴
+                    {% elif change.change_type == 'status_up' %}🟢
+                    {% elif change.change_type == 'sensitive_path' %}🎯
+                    {% elif change.change_type == 'tech_added' or change.change_type == 'tech_removed' %}⚙
+                    {% elif change.change_type == 'waf_appeared' or change.change_type == 'waf_gone' %}🛡
+                    {% elif change.change_type == 'header_removed' %}🔓
+                    {% elif change.change_type == 'header_added' %}🔒
+                    {% elif change.change_type == 'ssl_expiry_warn' %}⏳
+                    {% elif change.change_type == 'score_drop' %}📉
+                    {% elif change.change_type == 'content_changed' %}📄
+                    {% else %}●{% endif %}
+                    {{ change.description|truncatechars:52 }}
+                </div>
+                {% if change.old_value or change.new_value %}
+                <details>
+                    <summary style="font-size:.58rem;color:var(--gray);cursor:pointer;list-style:none;margin-bottom:.1rem;">diff ▾</summary>
+                    <div style="font-size:.57rem;background:var(--chrome);padding:.2rem .3rem;border:1px solid var(--chrome-border);border-radius:2px;">
+                        {% if change.old_value %}<div style="color:#e07070;">− {{ change.old_value|truncatechars:55 }}</div>{% endif %}
+                        {% if change.new_value %}<div style="color:var(--green);">+ {{ change.new_value|truncatechars:55 }}</div>{% endif %}
+                    </div>
+                </details>
+                {% endif %}
+                <div style="font-size:.55rem;color:var(--gray-dim);">{{ change.created_at|date:"d/m H:i" }}</div>
+            </div>
+        </div>
+        {% endfor %}
+        </div>
+        {% else %}
+        <div style="color:var(--text-gray);font-size:.65rem;text-align:center;padding:1.5rem;opacity:.6;">no changes recorded</div>
+        {% endif %}
+    </div>
+
+</div><!-- /grid row 5 -->
 
 <script>
-// Auto-refresh status every 15s
-const TARGET_ID = {{ target.pk }};
-async function refreshStatus() {
+// ════════════════════════════════════════════════════════════════════
+// Constants
+// ════════════════════════════════════════════════════════════════════
+const TARGET_PK        = {{ target.pk }};
+const CHECK_INTERVAL_S = {{ target.check_interval }};
+const IS_LIVE          = CHECK_INTERVAL_S <= 60;
+const CSRF_TOKEN       = '{{ csrf_token }}';
+
+// ════════════════════════════════════════════════════════════════════
+// WebSocket — updates en tiempo real (fallback a polling en onclose)
+// ════════════════════════════════════════════════════════════════════
+let ws             = null;
+let wsReconnTimer  = null;
+const WS_SCHEME    = location.protocol === 'https:' ? 'wss' : 'ws';
+
+function setupWebSocket() {
+    if (ws && ws.readyState < 2) return;  // ya conectado/conectando
+    clearTimeout(wsReconnTimer);
+
+    const url = `${WS_SCHEME}://${location.host}/ws/monitoring/${TARGET_PK}/`;
+    ws = new WebSocket(url);
+
+    ws.onopen = () => {
+        console.debug('[WS] connected — target', TARGET_PK);
+        // badge de live ya activado por IS_LIVE; no hace falta cambiar nada más
+    };
+
+    ws.onmessage = (evt) => {
+        try { handleWsMsg(JSON.parse(evt.data)); }
+        catch(e) { console.warn('[WS] bad JSON', e); }
+    };
+
+    ws.onclose = (evt) => {
+        console.debug('[WS] closed', evt.code);
+        ws = null;
+        // Reconectar en 5s (salvo cierre limpio código 1000)
+        if (evt.code !== 1000) wsReconnTimer = setTimeout(setupWebSocket, 5000);
+    };
+
+    ws.onerror = () => { /* onclose se dispara también */ };
+}
+
+function handleWsMsg(msg) {
+    // MonitorDetailConsumer usa **event["data"], por lo que todos los campos
+    // del payload están al nivel raíz del JSON junto con "type".
+    // Ej: { "type": "check_update", "check_id": 5, "status": "up", ... }
+    const t = msg.type || '';
+    if (t === 'check_update')     handleWsCheck(msg);
+    if (t === 'surface_update')   handleWsSurface(msg);
+    // screenshot_update no trae image_b64 (muy grande para WS) — recargar via HTTP
+    if (t === 'screenshot_update') loadScreenshot();
+}
+
+// ── Procesar check_update desde WebSocket ────────────────────────────
+function handleWsCheck(d) {
+    const check = {
+        id:               d.check_id,
+        status:           d.status,
+        http_status_code: d.http_status_code,
+        response_time_ms: d.response_time_ms,
+        ssl_expiry_days:  d.ssl_expiry_days,
+        security_score:   d.security_score,
+        technologies:     d.technologies || [],
+        waf_detected:     d.waf_detected || '',
+        error_message:    d.error_message || '',
+        created_at:       d.created_at,
+        created_at_fmt:   new Date(d.created_at).toLocaleTimeString('es-ES'),
+    };
+
+    // Evitar duplicados con el polling
+    if (document.querySelector(`[data-check-id="${check.id}"]`)) return;
+    if (check.id > latestCheckId) latestCheckId = check.id;
+
+    // Insertar fila en check log
+    const tbody    = document.getElementById('check-log-body');
+    const emptyMsg = document.getElementById('check-log-empty');
+    const hiddenTbl= document.getElementById('check-log-table');
+    if (emptyMsg)  emptyMsg.style.display  = 'none';
+    if (hiddenTbl) hiddenTbl.style.display = '';
+    if (tbody) {
+        const tmp = document.createElement('tbody');
+        tmp.innerHTML = buildCheckRow(check);
+        tbody.prepend(tmp.firstElementChild);
+        const rows = tbody.querySelectorAll('tr');
+        for (let i = 60; i < rows.length; i++) rows[i].remove();
+    }
+
+    // Métricas en vivo
+    const COLORS = { up:'var(--green-bright)', down:'var(--red)', error:'var(--orange)', unknown:'var(--text-gray)' };
+    const stEl = document.getElementById('live-status');
+    if (stEl) { stEl.textContent = d.status.toUpperCase(); stEl.style.color = COLORS[d.status] || COLORS.unknown; }
+
+    if (d.response_time_ms != null) {
+        const el = document.getElementById('live-resp');
+        if (el) {
+            el.textContent = d.response_time_ms + 'ms';
+            const ms = d.response_time_ms;
+            el.style.color = ms > 3000 ? 'var(--red)' : ms > 1000 ? 'var(--orange)' : 'var(--green-bright)';
+        }
+    }
+    if (d.http_status_code != null) {
+        const el = document.getElementById('live-http');
+        if (el) el.textContent = 'HTTP ' + d.http_status_code;
+    }
+    if (d.created_at) {
+        const el = document.getElementById('live-last-check');
+        if (el) {
+            const dt = new Date(d.created_at);
+            el.textContent = dt.toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit'}) + ' ' + dt.toLocaleTimeString('es-ES');
+        }
+    }
+    if (d.security_score != null) {
+        const el = document.getElementById('metric-score');
+        if (el) {
+            el.textContent = d.security_score;
+            const sc = d.security_score;
+            el.style.color = sc >= 90 ? 'var(--green-bright)' : sc >= 75 ? '#4caf50' :
+                sc >= 60 ? 'var(--orange)' : sc >= 40 ? '#cc8800' : 'var(--red)';
+        }
+    }
+    if (d.consecutive_failures != null) {
+        const el = document.getElementById('metric-failures');
+        if (el) { el.textContent = d.consecutive_failures; el.style.color = d.consecutive_failures > 0 ? 'var(--red)' : 'var(--green-bright)'; }
+    }
+
+    updateTechList(d.technologies || [], d.waf_detected || '');
+    loadChart(currentN);
+}
+
+// ── Procesar surface_update desde WebSocket ──────────────────────────
+function handleWsSurface(d) {
+    renderSubdomains(d.subdomains || []);
+    renderPaths(d.sensitive_paths || []);
+
+    const subEl  = document.getElementById('surface-subdomain-counter');
+    if (subEl) {
+        const tot = (d.subdomains || []).length;
+        const act = (d.subdomains || []).filter(s => s.is_active).length;
+        subEl.textContent = tot ? `${act} active / ${tot} subdomains` : '';
+    }
+    const pathEl = document.getElementById('surface-paths-counter');
+    if (pathEl) {
+        const n = (d.sensitive_paths || []).length;
+        pathEl.textContent = n ? `${n} path${n !== 1 ? 's' : ''} exposed` : '';
+        pathEl.style.color = n ? 'var(--red)' : '';
+    }
+    if (d.last_deep_check_at) {
+        const el = document.getElementById('surface-last-scan');
+        if (el) {
+            const dt = new Date(d.last_deep_check_at);
+            el.textContent = 'last scan ' + dt.toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Screenshot / Visual Monitoring
+// ════════════════════════════════════════════════════════════════════
+async function loadScreenshot() {
     try {
-        const r = await fetch(`/monitoring/${TARGET_ID}/status.json/`);
+        const r = await fetch(`/monitoring/${TARGET_PK}/screenshot.json/`);
         if (!r.ok) return;
         const d = await r.json();
-        // Could update DOM elements here if needed
-    } catch(e) {}
+        updateScreenshotPanel(d);
+    } catch(e) { /* skip */ }
 }
-setInterval(refreshStatus, 15000);
 
-// Details triangle animation
-document.querySelectorAll('details').forEach(el => {
-    el.addEventListener('toggle', () => {
-        const arrow = el.querySelector('summary span');
-        if (arrow) arrow.style.transform = el.open ? 'rotate(90deg)' : '';
+function updateScreenshotPanel(d) {
+    if (!d.has_screenshot) return;
+
+    const placeholder = document.getElementById('screenshot-placeholder');
+    const img         = document.getElementById('screenshot-img');
+    const modalImg    = document.getElementById('screenshot-modal-img');
+
+    if (placeholder) placeholder.style.display = 'none';
+    if (img) {
+        img.src          = `data:image/png;base64,${d.image_b64}`;
+        img.style.display = 'block';
+    }
+    if (modalImg) modalImg.src = `data:image/png;base64,${d.image_b64}`;
+
+    // Defacement alert
+    const badge   = document.getElementById('screenshot-defacement-badge');
+    const overlay = document.getElementById('screenshot-defacement-overlay');
+    if (d.is_defacement_alert) {
+        if (badge)   badge.style.display   = 'inline';
+        if (overlay) overlay.style.display = 'flex';
+    } else {
+        if (badge)   badge.style.display   = 'none';
+        if (overlay) overlay.style.display = 'none';
+    }
+
+    // Diff %
+    const diffEl = document.getElementById('screenshot-diff-pct');
+    if (diffEl) {
+        if (d.diff_pct != null) {
+            const col = d.diff_pct > 30 ? 'var(--red)' : d.diff_pct > 10 ? 'var(--orange)' : 'var(--green-bright)';
+            diffEl.innerHTML = `<span style="color:${col};">Δ ${d.diff_pct.toFixed(1)}%</span>`;
+        } else {
+            diffEl.textContent = '— first screenshot';
+        }
+    }
+
+    // Hash
+    const hashEl = document.getElementById('screenshot-hash');
+    if (hashEl && d.image_hash) hashEl.textContent = d.image_hash.slice(0, 12) + '…';
+
+    // Timestamp
+    const timeEl = document.getElementById('screenshot-time');
+    if (timeEl && d.created_at) {
+        const dt = new Date(d.created_at);
+        timeEl.textContent = dt.toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+    }
+
+    // Diff history sparkline
+    if (d.history && d.history.length) renderScreenshotHistory(d.history);
+}
+
+function renderScreenshotHistory(history) {
+    const container = document.getElementById('screenshot-history');
+    if (!container) return;
+
+    let html = '';
+    [...history].reverse().slice(0, 12).forEach(h => {
+        const pct   = h.diff_pct != null ? h.diff_pct : 0;
+        const alert = h.is_defacement_alert;
+        const col   = alert ? 'var(--red)' : pct > 10 ? 'var(--orange)' : 'var(--green-bright)';
+        const dt    = new Date(h.created_at);
+        const time  = dt.toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+        const bar   = Math.min(pct * 2, 100);   // 50% diff → 100% bar fill
+
+        html += `
+        <div style="display:flex;align-items:center;gap:.35rem;font-size:.57rem;padding:.1rem 0;border-bottom:1px solid var(--chrome-border);">
+            <div style="flex:1;height:4px;background:var(--chrome);border-radius:2px;overflow:hidden;" title="${pct.toFixed(1)}% diff">
+                <div style="width:${bar}%;height:100%;background:${col};border-radius:2px;"></div>
+            </div>
+            <span style="flex-shrink:0;color:${col};font-weight:600;min-width:34px;text-align:right;">${pct.toFixed(1)}%</span>
+            <span style="flex-shrink:0;color:var(--gray-dim);min-width:56px;text-align:right;">${time}</span>
+            ${alert ? '<span style="color:var(--red);flex-shrink:0;">⚠</span>' : ''}
+        </div>`;
     });
+
+    container.innerHTML = html || '<div style="color:var(--text-gray);font-size:.62rem;opacity:.5;">no history</div>';
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Chart
+// ════════════════════════════════════════════════════════════════════
+let respChart    = null;
+let currentN     = 50;
+let refreshTimer = null;
+
+function statusBarColor(s) {
+    return { up:'rgba(26,173,23,.8)', down:'rgba(220,50,50,.8)', error:'rgba(204,136,0,.8)' }[s]
+        || 'rgba(100,100,100,.4)';
+}
+
+async function loadChart(n) {
+    currentN = n;
+    ['50','100','200'].forEach(x => {
+        const b = document.getElementById('btn-' + x);
+        if (b) b.style.opacity = String(n) === x ? '1' : '0.5';
+    });
+
+    const resp = await fetch(`/monitoring/${TARGET_PK}/history.json/?n=${n}`);
+    const d    = await resp.json();
+    const ctx  = document.getElementById('resp-chart').getContext('2d');
+
+    if (respChart) respChart.destroy();
+
+    const thresholdPlugin = {
+        id: 'thresholds',
+        afterDraw(chart) {
+            const { ctx: c2, scales: { y, x } } = chart;
+            [{ val:1000, col:'rgba(204,136,0,.35)' }, { val:3000, col:'rgba(220,50,50,.35)' }]
+            .forEach(({ val, col }) => {
+                const py = y.getPixelForValue(val);
+                if (py < y.top || py > y.bottom) return;
+                c2.save(); c2.strokeStyle=col; c2.setLineDash([4,4]); c2.lineWidth=1;
+                c2.beginPath(); c2.moveTo(x.left,py); c2.lineTo(x.right,py); c2.stroke(); c2.restore();
+            });
+        }
+    };
+
+    respChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: d.labels,
+            datasets: [
+                {
+                    label: 'Response (ms)',
+                    data:  d.response_times,
+                    backgroundColor: d.statuses.map(statusBarColor),
+                    borderWidth: 0, borderRadius: 2, yAxisID: 'y',
+                },
+                {
+                    label: 'Score',
+                    data:  d.security_scores,
+                    type: 'line',
+                    borderColor: 'rgba(100,160,255,.65)',
+                    backgroundColor: 'rgba(100,160,255,.06)',
+                    fill: true, borderWidth: 1.5, pointRadius: 0,
+                    tension: 0.35, yAxisID: 'y2', spanGaps: true,
+                }
+            ]
+        },
+        plugins: [thresholdPlugin],
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            animation: IS_LIVE ? { duration: 80 } : { duration: 180 },
+            interaction: { mode:'index', intersect:false },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    backgroundColor: 'rgba(10,10,10,.92)', titleColor:'#1aad17',
+                    bodyColor:'#999', borderColor:'#2a2a2a', borderWidth:1, padding:8,
+                    callbacks: {
+                        title: ctx => ctx[0].label,
+                        label: ctx => {
+                            if (ctx.datasetIndex === 0) {
+                                const ms   = ctx.raw || 0;
+                                const st   = d.statuses[ctx.dataIndex];
+                                const http = d.http_codes[ctx.dataIndex];
+                                return ` ${ms}ms  ·  ${st}  ·  HTTP ${http}`;
+                            }
+                            if (ctx.raw !== null && ctx.raw !== undefined)
+                                return ` Score: ${ctx.raw}/100`;
+                            return null;
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: { color:'#555', font:{size:9}, maxTicksLimit:12, maxRotation:0 },
+                    grid:  { color:'rgba(255,255,255,.025)' },
+                },
+                y: {
+                    position:'left', beginAtZero:true,
+                    ticks: { color:'#555', font:{size:9}, callback: v => v+'ms' },
+                    grid:  { color:'rgba(255,255,255,.04)' },
+                },
+                y2: {
+                    position:'right', min:0, max:100,
+                    ticks: { color:'rgba(100,160,255,.45)', font:{size:9}, stepSize:25 },
+                    grid:  { display:false },
+                },
+            }
+        }
+    });
+}
+
+function setPoints(n) { loadChart(n); }
+
+function setRefresh(seconds) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+    ['5','30','60','off'].forEach(x => {
+        const b = document.getElementById('rf-' + x);
+        if (!b) return;
+        const active = (seconds === 0 && x === 'off') || String(seconds) === x;
+        b.style.opacity = active ? '1' : '0.45';
+        b.style.color   = (active && seconds > 0) ? 'var(--green-bright)' : '';
+    });
+    if (seconds > 0) {
+        refreshTimer = setInterval(() => { loadChart(currentN); pollStatus(); }, seconds * 1000);
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Status poll — updates header + key metrics
+// ════════════════════════════════════════════════════════════════════
+async function pollStatus() {
+    try {
+        const r = await fetch(`/monitoring/${TARGET_PK}/status.json/`);
+        if (!r.ok) return;
+        const d = await r.json();
+
+        const COLORS = {
+            up:'var(--green-bright)', down:'var(--red)',
+            error:'var(--orange)', unknown:'var(--text-gray)'
+        };
+
+        // Status in terminal header
+        const stEl = document.getElementById('live-status');
+        if (stEl) {
+            stEl.textContent = d.current_status.toUpperCase();
+            stEl.style.color = COLORS[d.current_status] || COLORS.unknown;
+        }
+
+        if (d.last_check) {
+            // Response time metric
+            const respEl = document.getElementById('live-resp');
+            if (respEl && d.last_check.response_time_ms != null) {
+                const ms = d.last_check.response_time_ms;
+                respEl.textContent = ms + 'ms';
+                respEl.style.color = ms > 3000 ? 'var(--red)' : ms > 1000 ? 'var(--orange)' : 'var(--green-bright)';
+            }
+            // HTTP code
+            const httpEl = document.getElementById('live-http');
+            if (httpEl) httpEl.textContent = 'HTTP ' + (d.last_check.http_status_code || '—');
+            // Last check timestamp
+            const lcEl = document.getElementById('live-last-check');
+            if (lcEl && d.last_check_at) {
+                const dt = new Date(d.last_check_at);
+                lcEl.textContent = dt.toLocaleDateString('es-ES',{day:'2-digit',month:'2-digit'})
+                    + ' ' + dt.toLocaleTimeString('es-ES');
+            }
+        }
+
+        // Failures
+        const failEl = document.getElementById('metric-failures');
+        if (failEl) {
+            failEl.textContent = d.consecutive_failures;
+            failEl.style.color = d.consecutive_failures > 0 ? 'var(--red)' : 'var(--green-bright)';
+        }
+
+        // Security score
+        if (d.last_security_score != null) {
+            const scoreEl = document.getElementById('metric-score');
+            if (scoreEl) {
+                scoreEl.textContent = d.last_security_score;
+                const sc = d.last_security_score;
+                scoreEl.style.color = sc >= 90 ? 'var(--green-bright)' : sc >= 75 ? '#4caf50' :
+                    sc >= 60 ? 'var(--orange)' : sc >= 40 ? '#cc8800' : 'var(--red)';
+            }
+        }
+
+        // Tech stack update
+        if (d.last_check && d.last_check.technologies) {
+            updateTechList(d.last_check.technologies, d.last_waf || '');
+        }
+
+    } catch(e) { /* network error, skip */ }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Check log polling
+// ════════════════════════════════════════════════════════════════════
+let latestCheckId = {{ checks.0.pk|default:0 }};
+
+function scoreColor(sc) {
+    if (sc == null) return 'var(--text-gray)';
+    return sc >= 75 ? 'var(--green-bright)' : sc >= 60 ? 'var(--orange)' : 'var(--red)';
+}
+
+function respColor(ms) {
+    if (!ms) return 'var(--text-dim)';
+    return ms > 3000 ? 'var(--red)' : ms > 1000 ? 'var(--orange)' : 'var(--text-dim)';
+}
+
+function sslColor(days) {
+    if (!days) return 'var(--text-gray)';
+    return days <= 7 ? 'var(--red)' : days <= 30 ? 'var(--orange)' : 'var(--text-gray)';
+}
+
+function buildCheckRow(c) {
+    const statusColors = {
+        up: 'color:var(--green-bright);background:rgba(26,173,23,.12);border:1px solid rgba(26,173,23,.25)',
+        down: 'color:#e03232;background:rgba(220,50,50,.12);border:1px solid rgba(220,50,50,.25)',
+        error: 'color:#cc8800;background:rgba(204,136,0,.12);border:1px solid rgba(204,136,0,.25)',
+    };
+    const info = [];
+    if (c.waf_detected) info.push(`<span style="color:var(--xp-blue);">${c.waf_detected}</span>`);
+    if (c.error_message) info.push(c.error_message.substring(0,35));
+    if (c.technologies && c.technologies.length) info.push(`<span style="color:var(--gray-dim);">${c.technologies.length} tech</span>`);
+
+    return `<tr class="new-row" data-check-id="${c.id}" style="border-bottom:1px solid rgba(255,255,255,.03);">
+        <td style="padding:.18rem .3rem;color:var(--text-gray);white-space:nowrap;">${c.created_at_fmt}</td>
+        <td style="padding:.18rem .3rem;text-align:center;">
+            <span style="font-size:.57rem;font-weight:700;padding:.04rem .22rem;${statusColors[c.status] || statusColors.error}">${c.status}</span>
+        </td>
+        <td style="padding:.18rem .3rem;text-align:right;color:${respColor(c.response_time_ms)};">
+            ${c.response_time_ms != null ? c.response_time_ms + 'ms' : '—'}
+        </td>
+        <td style="padding:.18rem .3rem;text-align:right;color:var(--text-gray);">${c.http_status_code || '—'}</td>
+        <td style="padding:.18rem .3rem;text-align:right;color:${sslColor(c.ssl_expiry_days)};">
+            ${c.ssl_expiry_days != null ? c.ssl_expiry_days + 'd' : '—'}
+        </td>
+        <td style="padding:.18rem .3rem;text-align:right;color:${scoreColor(c.security_score)};">
+            ${c.security_score != null ? c.security_score : '—'}
+        </td>
+        <td style="padding:.18rem .3rem;color:var(--text-gray);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.58rem;">
+            ${info.join(' ')}
+        </td>
+    </tr>`;
+}
+
+async function pollChecks() {
+    try {
+        const r = await fetch(`/monitoring/${TARGET_PK}/checks.json/?since_id=${latestCheckId}`);
+        if (!r.ok) return;
+        const d = await r.json();
+
+        if (!d.checks || !d.checks.length) return;
+
+        const tbody = document.getElementById('check-log-body');
+
+        // Show table if previously empty
+        const emptyMsg = document.getElementById('check-log-empty');
+        if (emptyMsg) emptyMsg.style.display = 'none';
+        const hiddenTable = document.getElementById('check-log-table');
+        if (hiddenTable) hiddenTable.style.display = '';
+
+        if (!tbody) return;
+
+        // Prepend new rows (newest first)
+        const fragment = document.createDocumentFragment();
+        for (let i = d.checks.length - 1; i >= 0; i--) {
+            const c = d.checks[i];
+            if (document.querySelector(`[data-check-id="${c.id}"]`)) continue;
+            const tmp = document.createElement('tbody');
+            tmp.innerHTML = buildCheckRow(c);
+            fragment.prepend(tmp.firstElementChild);
+        }
+        tbody.prepend(fragment);
+
+        // Trim to 60 rows max
+        const rows = tbody.querySelectorAll('tr');
+        for (let i = 60; i < rows.length; i++) rows[i].remove();
+
+        latestCheckId = d.latest_id;
+
+        // Reload chart when new check arrives
+        loadChart(currentN);
+
+    } catch(e) { /* skip */ }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Attack Surface polling
+// ════════════════════════════════════════════════════════════════════
+function renderSubdomains(subdomains) {
+    const container = document.getElementById('subdomain-list');
+    if (!container) return;
+
+    if (!subdomains || !subdomains.length) {
+        container.innerHTML = '<div style="color:var(--text-gray);font-size:.65rem;opacity:.6;">no subdomains discovered yet</div>';
+        return;
+    }
+
+    const active   = subdomains.filter(s => s.is_active);
+    const inactive = subdomains.filter(s => !s.is_active);
+
+    let html = '';
+    [...active, ...inactive].forEach(s => {
+        const badge   = s.is_active
+            ? '<span class="sub-badge sub-active">active</span>'
+            : '<span class="sub-badge sub-inactive">inactive</span>';
+        const ms      = s.response_time_ms != null ? `${s.response_time_ms}ms` : '';
+        const status  = s.http_status_code  != null ? `HTTP ${s.http_status_code}` : '';
+        const ip      = s.ip_address ? `<span style="color:var(--gray-dim);font-size:.55rem;">${s.ip_address}</span>` : '';
+        const lastSeen= s.last_seen_at
+            ? `<span style="color:var(--gray-dim);">seen ${new Date(s.last_seen_at).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</span>`
+            : '';
+
+        html += `<div style="padding:.22rem .3rem;border:1px solid var(--chrome-border);border-radius:2px;font-size:.62rem;${!s.is_active?'opacity:.55;':''}">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:.3rem;">
+                <span style="font-family:monospace;color:${s.is_active?'var(--text-dim)':'var(--text-gray)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${s.hostname}">${s.hostname}</span>
+                <div style="flex-shrink:0;display:flex;align-items:center;gap:.25rem;">${badge}</div>
+            </div>
+            <div style="display:flex;gap:.5rem;margin-top:.1rem;font-size:.57rem;color:var(--text-gray);flex-wrap:wrap;">
+                ${ip}${status ? `<span>${status}</span>` : ''}${ms ? `<span>${ms}</span>` : ''}${lastSeen}
+            </div>
+        </div>`;
+    });
+
+    container.innerHTML = html;
+}
+
+function renderPaths(paths) {
+    const container = document.getElementById('paths-list');
+    if (!container) return;
+
+    if (!paths || !paths.length) {
+        container.innerHTML = `<div style="font-size:.65rem;color:var(--text-gray);">
+            <span style="color:var(--green);">✓</span> No sensitive paths exposed</div>`;
+        return;
+    }
+
+    const sevClass = { critical:'sev-critical', high:'sev-high', medium:'sev-medium', info:'sev-info' };
+    const sevColor = { critical:'#ff4444', high:'var(--orange)', medium:'#ccaa00', info:'var(--text-gray)' };
+
+    let html = `<div style="font-size:.62rem;color:var(--red);margin-bottom:.3rem;font-weight:600;">⚠ ${paths.length} path${paths.length!==1?'s':''} exposed</div>`;
+    paths.forEach(p => {
+        const cls = sevClass[p.severity] || 'sev-info';
+        const col = sevColor[p.severity] || 'var(--text-gray)';
+        html += `<div style="padding:.25rem .3rem;border:1px solid;border-radius:2px;font-size:.62rem;" class="${cls}">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:.3rem;">
+                <span style="font-family:monospace;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${p.path}">${p.path}</span>
+                <span style="font-size:.55rem;font-weight:700;flex-shrink:0;color:${col};">${p.status_code}</span>
+            </div>
+            <div style="color:var(--text-gray);font-size:.58rem;margin-top:.05rem;">${p.label||''}</div>
+        </div>`;
+    });
+
+    container.innerHTML = html;
+}
+
+async function pollSurface() {
+    try {
+        const r = await fetch(`/monitoring/${TARGET_PK}/surface.json/`);
+        if (!r.ok) return;
+        const d = await r.json();
+
+        renderSubdomains(d.subdomains);
+        renderPaths(d.sensitive_paths);
+
+        // Counters
+        const subEl = document.getElementById('surface-subdomain-counter');
+        if (subEl) {
+            const tot = d.subdomain_count || 0;
+            const act = d.active_count   || 0;
+            subEl.textContent = tot ? `${act} active / ${tot} subdomains` : '';
+            subEl.style.color = act ? 'var(--text-gray)' : 'var(--gray)';
+        }
+
+        const pathEl = document.getElementById('surface-paths-counter');
+        if (pathEl && d.sensitive_paths) {
+            const n = d.sensitive_paths.length;
+            pathEl.textContent  = n ? `${n} path${n!==1?'s':''} exposed` : '';
+            pathEl.style.color  = n ? 'var(--red)' : '';
+        }
+
+        // Last scan timestamp
+        const scanEl = document.getElementById('surface-last-scan');
+        if (scanEl && d.last_deep_check_at) {
+            const dt = new Date(d.last_deep_check_at);
+            scanEl.textContent = 'last scan ' + dt.toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+        }
+
+    } catch(e) { /* skip */ }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// AJAX Toggle (Pause / Resume)
+// ════════════════════════════════════════════════════════════════════
+document.getElementById('form-toggle').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn    = document.getElementById('btn-toggle');
+    const url    = this.action;
+    const isActive = btn.textContent.trim().startsWith('⏸');
+
+    try {
+        const r = await fetch(url, {
+            method: 'POST',
+            headers: { 'X-CSRFToken': CSRF_TOKEN, 'X-Requested-With': 'XMLHttpRequest' },
+        });
+        const d = await r.json();
+
+        btn.textContent      = d.is_active ? '⏸ pause' : '▶ resume';
+        btn.style.color      = d.is_active ? '' : 'var(--orange)';
+        btn.style.borderColor= d.is_active ? '' : 'rgba(204,136,0,.5)';
+
+        // Update terminal PAUSED badge
+        const terminalOut = document.querySelector('.terminal .output');
+        let pausedBadge   = document.getElementById('terminal-paused');
+        if (!d.is_active) {
+            if (!pausedBadge) {
+                pausedBadge = document.createElement('span');
+                pausedBadge.id = 'terminal-paused';
+                pausedBadge.style.cssText = 'color:var(--orange);margin-left:.5rem;font-weight:700;';
+                pausedBadge.textContent   = '⏸ PAUSED';
+                terminalOut && terminalOut.appendChild(pausedBadge);
+            }
+        } else {
+            pausedBadge && pausedBadge.remove();
+        }
+
+        // Flash card border
+        const card = btn.closest('.card') || document.querySelector('.terminal');
+        if (card && !d.is_active) {
+            card.style.borderColor = 'rgba(204,136,0,.4)';
+            setTimeout(() => card.style.borderColor = '', 2000);
+        }
+
+    } catch(err) {
+        console.error('Toggle failed', err);
+    }
 });
+
+// ════════════════════════════════════════════════════════════════════
+// AJAX Run Now
+// ════════════════════════════════════════════════════════════════════
+document.getElementById('form-run-now').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('btn-run-now');
+    btn.disabled    = true;
+    btn.textContent = '… running';
+
+    try {
+        const r = await fetch(this.action, {
+            method: 'POST',
+            headers: { 'X-CSRFToken': CSRF_TOKEN, 'X-Requested-With': 'XMLHttpRequest' },
+        });
+        const d = await r.json();
+
+        if (d.ok) {
+            btn.textContent = '✓ done';
+            btn.style.color = 'var(--green-bright)';
+            // Immediately poll for updates
+            await pollChecks();
+            await pollStatus();
+            await pollSurface();
+        } else {
+            btn.textContent = '✗ error';
+            btn.style.color = 'var(--red)';
+        }
+    } catch(err) {
+        btn.textContent = '✗ failed';
+        btn.style.color = 'var(--red)';
+    } finally {
+        setTimeout(() => {
+            btn.disabled    = false;
+            btn.textContent = '▶ check now';
+            btn.style.color = '';
+        }, 3000);
+    }
+});
+
+// ════════════════════════════════════════════════════════════════════
+// Trigger deep check via run_now (reuses same endpoint)
+// ════════════════════════════════════════════════════════════════════
+async function triggerDeepCheck() {
+    const badge = document.getElementById('deep-check-badge');
+    const btn   = document.getElementById('btn-deep');
+    if (badge) badge.style.display = 'inline';
+    if (btn)   btn.disabled = true;
+
+    // Just fire a normal check — deep check will piggyback if due.
+    // For an immediate force, we call run_now
+    try {
+        await fetch(`/monitoring/${TARGET_PK}/run/`, {
+            method: 'POST',
+            headers: { 'X-CSRFToken': CSRF_TOKEN, 'X-Requested-With': 'XMLHttpRequest' },
+        });
+        setTimeout(async () => {
+            await pollSurface();
+            if (badge) badge.style.display = 'none';
+            if (btn)   btn.disabled = false;
+        }, 5000); // surface results take a few seconds
+    } catch(e) {
+        if (badge) badge.style.display = 'none';
+        if (btn)   btn.disabled = false;
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Tech / WAF dynamic update
+// ════════════════════════════════════════════════════════════════════
+function updateTechList(technologies, waf) {
+    const techList = document.getElementById('tech-list');
+    if (techList && technologies && technologies.length) {
+        const rows = technologies.map(t =>
+            `<div style="display:flex;align-items:center;gap:.35rem;font-size:.68rem;">
+                <span style="color:var(--green-bright);font-size:.5rem;">▸</span>
+                <span style="color:var(--text-dim);">${t}</span>
+            </div>`
+        ).join('');
+        techList.innerHTML = `<div style="display:flex;flex-direction:column;gap:.25rem;">${rows}</div>`;
+    }
+
+    const wafContent = document.getElementById('waf-content');
+    if (wafContent) {
+        if (waf) {
+            wafContent.innerHTML = `<div style="display:flex;align-items:center;gap:.4rem;">
+                <span style="font-size:.75rem;">🛡</span>
+                <span style="color:var(--xp-blue);font-size:.72rem;font-weight:600;">${waf}</span>
+            </div>
+            <div style="font-size:.6rem;color:var(--text-gray);margin-top:.15rem;">Ajusta tu bypass strategy — WAF activo</div>`;
+        } else {
+            wafContent.innerHTML = `<div style="font-size:.65rem;">
+                <span style="color:var(--orange);">⚠</span>
+                <span style="color:var(--text-gray);"> No WAF/CDN detected</span>
+            </div>`;
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Init
+// ════════════════════════════════════════════════════════════════════
+loadChart(50);
+pollSurface();      // attack surface inmediato
+loadScreenshot();   // screenshot del último deep check
+
+// Check log live badge
+if (IS_LIVE) document.getElementById('log-live-badge').style.display = 'inline';
+
+// Intervalos de polling (backup cuando WS no está disponible)
+const STATUS_POLL_MS  = IS_LIVE ? 5000  : 15000;
+const CHECKS_POLL_MS  = IS_LIVE ? Math.max(CHECK_INTERVAL_S, 5) * 1000 : 20000;
+const SURFACE_POLL_MS = 60000;      // surface cambia lento — 60s está bien
+const SHOT_POLL_MS    = 300_000;    // screenshot cada 5 min (deep check = 6h)
+
+setInterval(pollStatus,     STATUS_POLL_MS);
+setInterval(pollChecks,     CHECKS_POLL_MS);
+setInterval(pollSurface,    SURFACE_POLL_MS);
+setInterval(loadScreenshot, SHOT_POLL_MS);
+
+// WebSocket — conectar siempre (también para targets no-live)
+// Si WS no está disponible (nginx sin WS, etc.) fallback a polling
+setupWebSocket();
+
+if (IS_LIVE) {
+    const autoSecs = Math.max(CHECK_INTERVAL_S, 5);
+    setRefresh(autoSecs);
+    [5, 30, 60].forEach(s => {
+        if (autoSecs === s) {
+            const b = document.getElementById('rf-' + s);
+            if (b) { b.style.opacity='1'; b.style.color='var(--green-bright)'; }
+        }
+    });
+}
 </script>
 {% endblock %}

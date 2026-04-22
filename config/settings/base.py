@@ -22,20 +22,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 env = environ.Env(
     DJANGO_DEBUG=(bool, False),
     DJANGO_ALLOWED_HOSTS=(list, []),
-    DISABLE_PLAN_LIMITS=(bool, False),
 )
 
 # Carga el .env de la raíz si existe (dev local).
 env_file = BASE_DIR / ".env"
 if env_file.exists():
     environ.Env.read_env(str(env_file))
-
-# ---------------------------------------------------------------------------
-# Feature flags
-# ---------------------------------------------------------------------------
-# True → todos los usuarios tienen cuota ilimitada y todas las features
-# activadas (útil para desarrollo/testing). Nunca usar en producción.
-DISABLE_PLAN_LIMITS = env("DISABLE_PLAN_LIMITS")
 
 # ---------------------------------------------------------------------------
 # Núcleo
@@ -48,6 +40,7 @@ ALLOWED_HOSTS = env("DJANGO_ALLOWED_HOSTS")
 # Apps
 # ---------------------------------------------------------------------------
 DJANGO_APPS = [
+    "daphne",          # DEBE ir ANTES de django.contrib.staticfiles (requisito de Channels)
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -57,6 +50,7 @@ DJANGO_APPS = [
 ]
 
 THIRD_PARTY_APPS = [
+    "channels",        # WebSocket support
     "rest_framework",
     "rest_framework.authtoken",
     "corsheaders",
@@ -91,7 +85,6 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "axes.middleware.AxesMiddleware",
-    "apps.users.middleware.EmailVerificationMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -114,6 +107,20 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
+
+# ---------------------------------------------------------------------------
+# Django Channels — WebSocket support
+# ---------------------------------------------------------------------------
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [env("REDIS_URL", default="redis://localhost:6379/1")],
+            "capacity": 1500,       # mensajes max en cola por grupo
+            "expiry": 60,           # segundos antes de expirar mensaje no entregado
+        },
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Base de datos — PostgreSQL local (via Docker Compose)
@@ -143,10 +150,11 @@ AUTHENTICATION_BACKENDS = [
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-     "OPTIONS": {"min_length": 12}},
-    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
-    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {"min_length": 5},
+    },
+    {"NAME": "apps.users.password_validators.ComplexityValidator"},
 ]
 
 LOGIN_URL = "login"
@@ -159,9 +167,6 @@ LOGOUT_REDIRECT_URL = "login"
 # El backend concreto (SMTP / console) lo define cada entorno en su settings.
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="AttackFlow <noreply@attackflow.local>")
 SERVER_EMAIL = DEFAULT_FROM_EMAIL
-
-# Ventana de validez del token de verificación de email.
-EMAIL_VERIFY_MAX_AGE: int = 60 * 60 * 24  # 24 horas
 
 # ---------------------------------------------------------------------------
 # Internacionalización
@@ -217,13 +222,14 @@ CELERY_TASK_TIME_LIMIT = 300              # Hard kill a los 5 min
 CELERY_TASK_SOFT_TIME_LIMIT = 270         # SoftTimeLimitExceeded a los 4:30
 CELERY_TIMEZONE = TIME_ZONE
 
-# Beat: lanza los checks de monitoring automático cada 60s.
-# La lógica "is_due" dentro de run_due_monitoring_checks decide
-# qué targets necesitan comprobarse según su intervalo configurado.
+# Beat: dispatcher de monitoring cada 5s para soportar intervalos live (5s/30s/1min).
+# La lógica "is_due" dentro de run_due_monitoring_checks filtra qué targets
+# necesitan comprobarse según su intervalo individual.
+# Para targets con intervalos largos (5min+) el overhead es mínimo (solo una query).
 CELERY_BEAT_SCHEDULE = {
     "run-due-monitoring-checks": {
         "task": "apps.monitoring.tasks.run_due_monitoring_checks",
-        "schedule": 60.0,  # segundos
+        "schedule": 5.0,  # segundos — soporta intervalos live de 5s
     },
 }
 

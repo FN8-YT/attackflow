@@ -108,7 +108,7 @@ class Audit(TimeStampedModel):
         blank=True,
         help_text=_(
             "Lista de scanner keys seleccionados por el usuario. "
-            "Vacío = ejecutar todos los disponibles según plan y modo."
+            "Vacío = ejecutar todos los disponibles según modo."
         ),
     )
     raw_data = models.JSONField(
